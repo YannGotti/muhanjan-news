@@ -18,6 +18,11 @@ class Settings:
     proxy_url: str | None
     parse_mode: str
     http_timeout: float
+    http_connect_timeout: float
+    redis_url: str
+    redis_fsm_ttl_seconds: int
+    submission_cooldown_seconds: int
+    submission_deduplicate_ttl_seconds: int
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -32,7 +37,12 @@ class Settings:
             local_upload_dir=upload_dir,
             proxy_url=proxy_url,
             parse_mode=(os.getenv("BOT_PARSE_MODE") or "HTML").strip(),
-            http_timeout=float(os.getenv("HTTP_TIMEOUT") or 30),
+            http_timeout=float(os.getenv("HTTP_TIMEOUT") or 25),
+            http_connect_timeout=float(os.getenv("HTTP_CONNECT_TIMEOUT") or 5),
+            redis_url=(os.getenv("BOT_REDIS_URL") or "redis://localhost:6379/0").strip(),
+            redis_fsm_ttl_seconds=int(os.getenv("REDIS_FSM_TTL_SECONDS") or 86400),
+            submission_cooldown_seconds=int(os.getenv("SUBMISSION_COOLDOWN_SECONDS") or 8),
+            submission_deduplicate_ttl_seconds=int(os.getenv("SUBMISSION_DEDUPLICATE_TTL_SECONDS") or 3600),
         )
 
 

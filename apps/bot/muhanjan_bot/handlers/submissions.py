@@ -5,24 +5,30 @@ from aiogram.types import Message
 
 from muhanjan_bot import texts
 from muhanjan_bot.keyboards.reply import main_menu_keyboard
+from muhanjan_bot.services.api import BotApiError
+from muhanjan_bot.services.limits import acquire_submission_cooldown, register_submission_message
 from muhanjan_bot.services.submissions import (
     build_submission_payload,
     is_message_usable_for_submission,
     send_submission,
 )
 from muhanjan_bot.services.users import ensure_remote_user, fetch_user_state
-from muhanjan_bot.utils.formatters import format_ban_reason, html_safe
+from muhanjan_bot.utils.formatters import format_ban_reason, format_seconds, html_safe
 
 router = Router(name="submissions")
 
 
 @router.message(F.content_type.in_({"text", "photo", "document", "video"}))
 async def handle_submission(message: Message) -> None:
-    state = await fetch_user_state(message.from_user.id)
-
-    if not state.get("exists"):
-        await ensure_remote_user(message)
+    try:
         state = await fetch_user_state(message.from_user.id)
+
+        if not state.get("exists"):
+            await ensure_remote_user(message)
+            state = await fetch_user_state(message.from_user.id)
+    except BotApiError:
+        await message.answer(texts.API_TEMPORARY_UNAVAILABLE, reply_markup=main_menu_keyboard())
+        return
 
     if state.get("is_banned"):
         reason_block = texts.BANNED_REASON_BLOCK.format(
@@ -38,12 +44,29 @@ async def handle_submission(message: Message) -> None:
         await message.answer(texts.NEED_TWITCH_FIRST, reply_markup=main_menu_keyboard())
         return
 
+    is_unique_message = await register_submission_message(message.from_user.id, message.message_id)
+    if not is_unique_message:
+        await message.answer(texts.DUPLICATE_SUBMISSION_MESSAGE, reply_markup=main_menu_keyboard())
+        return
+
+    allowed, ttl = await acquire_submission_cooldown(message.from_user.id)
+    if not allowed:
+        await message.answer(
+            texts.RATE_LIMIT_MESSAGE.format(seconds=format_seconds(ttl)),
+            reply_markup=main_menu_keyboard(),
+        )
+        return
+
     if not is_message_usable_for_submission(message):
         await message.answer(texts.EMPTY_SUBMISSION, reply_markup=main_menu_keyboard())
         return
 
-    payload = await build_submission_payload(message.bot, message)
-    result = await send_submission(payload)
+    try:
+        payload = await build_submission_payload(message.bot, message)
+        result = await send_submission(payload)
+    except BotApiError:
+        await message.answer(texts.API_TEMPORARY_UNAVAILABLE, reply_markup=main_menu_keyboard())
+        return
 
     if not result.get("ok"):
         detail = (result.get("detail") or "").strip().lower()
@@ -75,5 +98,10 @@ async def handle_submission(message: Message) -> None:
 
 @router.message()
 async def fallback_message(message: Message) -> None:
-    await ensure_remote_user(message)
+    try:
+        await ensure_remote_user(message)
+    except BotApiError:
+        await message.answer(texts.API_TEMPORARY_UNAVAILABLE, reply_markup=main_menu_keyboard())
+        return
+
     await message.answer(texts.FALLBACK_TEXT, reply_markup=main_menu_keyboard())

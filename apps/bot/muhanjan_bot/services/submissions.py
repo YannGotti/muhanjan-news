@@ -3,7 +3,7 @@ from __future__ import annotations
 from aiogram import Bot
 from aiogram.types import Message
 
-from muhanjan_bot.services.api import api_client
+from muhanjan_bot.services.api import BotApiError, api_client, extract_error_detail
 from muhanjan_bot.services.files import save_telegram_file
 
 
@@ -91,18 +91,16 @@ def is_message_usable_for_submission(message: Message) -> bool:
 
 
 async def send_submission(payload: dict) -> dict:
-    response = await api_client.post("/bot/submissions", payload)
+    try:
+        response = await api_client.post("/bot/submissions", payload)
+    except BotApiError:
+        raise
 
     if response.status_code >= 400:
-        detail = None
-        try:
-            detail = response.json().get("detail")
-        except Exception:
-            detail = None
         return {
             "ok": False,
             "status_code": response.status_code,
-            "detail": detail,
+            "detail": extract_error_detail(response),
         }
 
     return {

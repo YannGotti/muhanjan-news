@@ -1,0 +1,12 @@
+.venv/
+node_modules/
+
+__pycache__/
+
+deploy/
+tree.txt
+uploads/
+
+.env
+dump.py
+file_tree.txt

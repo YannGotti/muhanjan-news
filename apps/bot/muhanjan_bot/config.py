@@ -23,6 +23,7 @@ class Settings:
     redis_fsm_ttl_seconds: int
     submission_cooldown_seconds: int
     submission_deduplicate_ttl_seconds: int
+    max_upload_file_size_bytes: int
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -43,6 +44,7 @@ class Settings:
             redis_fsm_ttl_seconds=int(os.getenv("REDIS_FSM_TTL_SECONDS") or 86400),
             submission_cooldown_seconds=int(os.getenv("SUBMISSION_COOLDOWN_SECONDS") or 8),
             submission_deduplicate_ttl_seconds=int(os.getenv("SUBMISSION_DEDUPLICATE_TTL_SECONDS") or 3600),
+            max_upload_file_size_bytes=int(os.getenv("MAX_UPLOAD_FILE_SIZE_BYTES") or 20971520),
         )
 
 

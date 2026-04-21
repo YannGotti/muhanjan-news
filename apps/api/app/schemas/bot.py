@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class BotUserUpsert(BaseModel):
@@ -27,6 +27,6 @@ class AttachmentIn(BaseModel):
 class SubmissionCreate(BaseModel):
     telegram_id: int
     message_text: str | None = None
-    links: list[str] = []
+    links: list[str] = Field(default_factory=list)
     source_message_id: int | None = None
-    attachments: list[AttachmentIn] = []
+    attachments: list[AttachmentIn] = Field(default_factory=list)

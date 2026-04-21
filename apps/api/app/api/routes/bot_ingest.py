@@ -1,8 +1,12 @@
 import json
-from fastapi import APIRouter, Depends, HTTPException, status
+from datetime import datetime, timezone
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
+from app.core.config import settings
 from app.models.user import User
 from app.models.submission import Submission, Attachment
 from app.schemas.bot import BotUserUpsert, SubmissionCreate, TwitchNicknameUpdate
@@ -12,7 +16,22 @@ from app.services.settings import is_moderation_enabled
 router = APIRouter(tags=["bot"])
 
 
-@router.post('/bot/users/upsert')
+def _validate_attachment_path(storage_path: str) -> str:
+    base_dir = settings.upload_dir_path.resolve()
+    target_path = Path(storage_path).resolve()
+
+    try:
+        target_path.relative_to(base_dir)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Некорректный путь вложения") from exc
+
+    if not target_path.exists():
+        raise HTTPException(status_code=400, detail="Файл вложения не найден")
+
+    return str(target_path)
+
+
+@router.post("/bot/users/upsert")
 def upsert_user(payload: BotUserUpsert, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.telegram_id == payload.telegram_id).first()
     if not user:
@@ -27,53 +46,110 @@ def upsert_user(payload: BotUserUpsert, db: Session = Depends(get_db)):
         user.username = payload.username
         user.first_name = payload.first_name
         user.last_name = payload.last_name
+
     db.commit()
     db.refresh(user)
+
     return {
-        'id': user.id,
-        'has_twitch_nickname': bool(user.twitch_nickname),
-        'is_banned': user.is_banned,
+        "id": user.id,
+        "has_twitch_nickname": bool(user.twitch_nickname),
+        "is_banned": user.is_banned,
     }
 
 
-@router.post('/bot/users/twitch')
+@router.post("/bot/users/twitch")
 def set_twitch(payload: TwitchNicknameUpdate, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.telegram_id == payload.telegram_id).first()
     if not user:
-        raise HTTPException(status_code=404, detail='Пользователь не найден')
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+
     user.twitch_nickname = payload.twitch_nickname.strip()
     db.add(user)
     db.commit()
-    return {'ok': True}
+    return {"ok": True}
 
 
-@router.get('/bot/users/{telegram_id}')
+@router.get("/bot/users/{telegram_id}")
 def get_user_state(telegram_id: int, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.telegram_id == telegram_id).first()
     if not user:
-        return {'exists': False}
+        return {"exists": False}
+
     return {
-        'exists': True,
-        'id': user.id,
-        'has_twitch_nickname': bool(user.twitch_nickname),
-        'is_banned': user.is_banned,
-        'ban_reason': user.ban_reason,
-        'twitch_nickname': user.twitch_nickname,
+        "exists": True,
+        "id": user.id,
+        "has_twitch_nickname": bool(user.twitch_nickname),
+        "is_banned": user.is_banned,
+        "ban_reason": user.ban_reason,
+        "twitch_nickname": user.twitch_nickname,
     }
 
 
-@router.post('/bot/submissions')
+@router.get("/bot/users/{telegram_id}/recent-submissions")
+def get_recent_submissions(
+    telegram_id: int,
+    limit: int = Query(default=5, ge=1, le=10),
+    db: Session = Depends(get_db),
+):
+    user = db.query(User).filter(User.telegram_id == telegram_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+
+    items = (
+        db.query(Submission)
+        .filter(Submission.user_id == user.id)
+        .order_by(Submission.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+
+    return {
+        "items": [
+            {
+                "id": item.id,
+                "status": item.status,
+                "message_preview": (item.message_text or "").strip()[:140],
+                "created_at": item.created_at,
+                "review_comment": item.review_comment,
+            }
+            for item in items
+        ]
+    }
+
+
+@router.post("/bot/submissions")
 def create_submission(payload: SubmissionCreate, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.telegram_id == payload.telegram_id).first()
     if not user:
-        raise HTTPException(status_code=404, detail='Пользователь не найден')
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
     if user.is_banned:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Вы заблокированы и не можете отправлять предложку')
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Вы заблокированы и не можете отправлять предложку",
+        )
     if not user.twitch_nickname:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Сначала укажите Twitch-ник')
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Сначала укажите Twitch-ник")
+
+    if payload.source_message_id is not None:
+        existing = (
+            db.query(Submission)
+            .filter(
+                Submission.user_id == user.id,
+                Submission.source_message_id == payload.source_message_id,
+            )
+            .first()
+        )
+        if existing:
+            return {
+                "ok": True,
+                "submission_id": existing.id,
+                "status": existing.status,
+                "duplicate": True,
+            }
 
     links = payload.links or extract_links(payload.message_text)
-    status_value = 'pending' if is_moderation_enabled(db) else 'approved'
+    status_value = "pending" if is_moderation_enabled(db) else "approved"
+    approved_at = datetime.now(timezone.utc) if status_value == "approved" else None
 
     submission = Submission(
         user_id=user.id,
@@ -81,23 +157,26 @@ def create_submission(payload: SubmissionCreate, db: Session = Depends(get_db)):
         links_json=json.dumps(links, ensure_ascii=False),
         status=status_value,
         source_message_id=payload.source_message_id,
+        approved_at=approved_at,
     )
     db.add(submission)
     db.flush()
 
     for item in payload.attachments:
-        db.add(Attachment(
-            submission_id=submission.id,
-            telegram_file_id=item.telegram_file_id,
-            telegram_unique_file_id=item.telegram_unique_file_id,
-            file_type=item.file_type,
-            original_name=item.original_name,
-            mime_type=item.mime_type,
-            file_size=item.file_size,
-            storage_path=item.storage_path,
-            public_url=item.public_url,
-        ))
+        db.add(
+            Attachment(
+                submission_id=submission.id,
+                telegram_file_id=item.telegram_file_id,
+                telegram_unique_file_id=item.telegram_unique_file_id,
+                file_type=item.file_type,
+                original_name=item.original_name,
+                mime_type=item.mime_type,
+                file_size=item.file_size,
+                storage_path=_validate_attachment_path(item.storage_path),
+                public_url=item.public_url,
+            )
+        )
 
     db.commit()
     db.refresh(submission)
-    return {'ok': True, 'submission_id': submission.id, 'status': submission.status}
+    return {"ok": True, "submission_id": submission.id, "status": submission.status}

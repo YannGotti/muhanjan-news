@@ -8,6 +8,7 @@
           <span class="badge">{{ attachmentLabel }}</span>
           <span v-if="item.links?.length" class="badge">Есть ссылки</span>
           <span v-if="item.message_text" class="badge">Есть текст</span>
+          <span v-if="item.user?.is_banned" class="badge badge-rejected">Автор заблокирован</span>
         </div>
 
         <div>
@@ -29,6 +30,10 @@
         <div v-if="item.review_comment" class="hint-box max-w-[320px] text-left">
           <div class="hint-title">Комментарий модератора</div>
           <div class="hint-text">{{ item.review_comment }}</div>
+        </div>
+        <div v-if="item.user?.ban_reason" class="hint-box max-w-[320px] text-left">
+          <div class="hint-title">Причина блокировки</div>
+          <div class="hint-text">{{ item.user.ban_reason }}</div>
         </div>
       </div>
     </div>
@@ -109,7 +114,7 @@
 
           <div v-else class="media-placeholder">
             <div class="media-placeholder-icon">
-              {{ att.file_type === 'document' ? 'DOC' : 'FILE' }}
+              {{ fileTypeLabel(att) }}
             </div>
             <div class="media-placeholder-name">{{ att.original_name || 'Файл' }}</div>
           </div>
@@ -161,14 +166,37 @@
       </div>
 
       <div class="flex flex-wrap gap-3">
-        <button class="btn-primary" title="Одобрить материал и отправить его в эфирную ленту" @click="$emit('approve', item)">
+        <button
+          v-if="item.status === 'pending'"
+          class="btn-primary"
+          title="Одобрить материал и отправить его в эфирную ленту"
+          @click="$emit('approve', item)"
+        >
           Одобрить
         </button>
-        <button class="btn-danger" title="Отклонить материал с причиной" @click="$emit('reject', item)">
+        <button
+          v-if="item.status === 'pending'"
+          class="btn-danger"
+          title="Отклонить материал с причиной"
+          @click="$emit('reject', item)"
+        >
           Отклонить
         </button>
-        <button class="btn-secondary" title="Заблокировать пользователя" @click="$emit('ban', item.user)">
+        <button
+          v-if="!item.user?.is_banned"
+          class="btn-secondary"
+          title="Заблокировать пользователя"
+          @click="$emit('ban', item.user)"
+        >
           Заблокировать автора
+        </button>
+        <button
+          v-else
+          class="btn-secondary"
+          title="Снять блокировку пользователя"
+          @click="$emit('unban', item.user)"
+        >
+          Разблокировать автора
         </button>
       </div>
     </div>
@@ -183,7 +211,7 @@ const props = defineProps({
   showActions: { type: Boolean, default: false },
 })
 
-defineEmits(['approve', 'reject', 'ban'])
+defineEmits(['approve', 'reject', 'ban', 'unban'])
 
 const copiedText = ref(false)
 const copiedLink = ref('')
@@ -211,6 +239,18 @@ const isImage = (att) => String(att?.mime_type || '').startsWith('image/')
 
 const resolveAttachmentUrl = (att) => att?.public_url || att?.download_url || null
 const resolveDownloadUrl = (att) => att?.download_url || att?.public_url || null
+
+const fileTypeLabel = (att) => {
+  const map = {
+    document: 'DOC',
+    audio: 'AUD',
+    voice: 'VOICE',
+    video: 'VID',
+    animation: 'GIF',
+    photo: 'IMG',
+  }
+  return map[att?.file_type] || 'FILE'
+}
 
 const formatFileSize = (bytes) => {
   if (!bytes && bytes !== 0) return ''

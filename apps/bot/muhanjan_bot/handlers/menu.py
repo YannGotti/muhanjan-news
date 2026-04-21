@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from aiogram import Router
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
@@ -8,6 +10,7 @@ from aiogram.types import Message
 from muhanjan_bot import texts
 from muhanjan_bot.keyboards.reply import main_menu_keyboard
 from muhanjan_bot.services.api import BotApiError
+from muhanjan_bot.services.submissions import fetch_recent_submissions, human_status
 from muhanjan_bot.services.users import ensure_remote_user, fetch_user_state
 from muhanjan_bot.states.profile import ProfileState
 from muhanjan_bot.utils.formatters import format_ban_reason, html_safe
@@ -24,6 +27,52 @@ def _status_message(state: dict) -> str:
         twitch=html_safe(state.get("twitch_nickname") or "не указан"),
         sending=sending,
         ban_line=ban_line,
+    )
+
+
+def _format_recent_items(items: list[dict]) -> str:
+    lines: list[str] = []
+    for item in items:
+        created_at = item.get("created_at")
+        created_text = ""
+        try:
+            created_text = datetime.fromisoformat(str(created_at).replace("Z", "+00:00")).strftime("%d.%m.%Y %H:%M")
+        except Exception:
+            created_text = str(created_at or "—")
+
+        preview = (item.get("message_preview") or "Без текста").strip()
+        comment = (item.get("review_comment") or "").strip()
+        comment_block = ""
+        if comment:
+            comment_block = texts.RECENT_COMMENT_BLOCK.format(comment=html_safe(comment))
+
+        lines.append(
+            texts.RECENT_SUBMISSION_ITEM.format(
+                id=item.get("id"),
+                status_label=human_status(str(item.get("status") or "")),
+                created_at=created_text,
+                preview=html_safe(preview),
+                comment_block=comment_block,
+            )
+        )
+    return "\n\n".join(lines)
+
+
+async def _send_recent(message: Message) -> None:
+    try:
+        await ensure_remote_user(message)
+        items = await fetch_recent_submissions(message.from_user.id, limit=5)
+    except BotApiError:
+        await message.answer(texts.API_TEMPORARY_UNAVAILABLE, reply_markup=main_menu_keyboard())
+        return
+
+    if not items:
+        await message.answer(texts.RECENT_SUBMISSIONS_EMPTY, reply_markup=main_menu_keyboard())
+        return
+
+    await message.answer(
+        texts.RECENT_SUBMISSIONS_HEADER.format(items=_format_recent_items(items)),
+        reply_markup=main_menu_keyboard(),
     )
 
 
@@ -96,6 +145,11 @@ async def status_command(message: Message) -> None:
     await message.answer(_status_message(state), reply_markup=main_menu_keyboard())
 
 
+@router.message(Command("recent"))
+async def recent_command(message: Message) -> None:
+    await _send_recent(message)
+
+
 @router.message(Command("twitch"))
 async def twitch_command(message: Message, state: FSMContext) -> None:
     try:
@@ -127,6 +181,11 @@ async def send_button(message: Message) -> None:
 @router.message(lambda message: (message.text or "").strip() == texts.MENU_STATUS)
 async def status_button(message: Message) -> None:
     await status_command(message)
+
+
+@router.message(lambda message: (message.text or "").strip() == texts.MENU_RECENT)
+async def recent_button(message: Message) -> None:
+    await _send_recent(message)
 
 
 @router.message(lambda message: (message.text or "").strip() == texts.MENU_CHANGE_TWITCH)

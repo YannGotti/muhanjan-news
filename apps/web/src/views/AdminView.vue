@@ -29,10 +29,10 @@
               <router-link to="/stream" class="btn-secondary" title="Открыть эфирную ленту">
                 Открыть эфир
               </router-link>
-              <button class="btn-secondary" :disabled="loading" @click="loadAll">
+              <button class="btn-secondary" :disabled="loading" @click="reloadAll">
                 {{ loading ? 'Обновление...' : 'Обновить' }}
               </button>
-              <button class="btn-secondary" @click="toggleModeration">
+              <button class="btn-secondary" :disabled="actionLoading" @click="toggleModeration">
                 {{ moderationEnabled ? 'Выключить очередь' : 'Включить очередь' }}
               </button>
               <button class="btn-ghost" @click="logout">Выйти</button>
@@ -42,23 +42,23 @@
           <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
             <div class="kpi">
               <div class="kpi-label">Ждут проверки</div>
-              <div class="kpi-value">{{ pending.length }}</div>
+              <div class="kpi-value">{{ counts.pending }}</div>
               <div class="kpi-text">Новые материалы, по которым нужно решение.</div>
             </div>
             <div class="kpi">
               <div class="kpi-label">Одобрено</div>
-              <div class="kpi-value">{{ approved.length }}</div>
+              <div class="kpi-value">{{ counts.approved }}</div>
               <div class="kpi-text">Уже готовы для показа в эфире.</div>
             </div>
             <div class="kpi">
               <div class="kpi-label">Отклонено</div>
-              <div class="kpi-value">{{ rejected.length }}</div>
+              <div class="kpi-value">{{ counts.rejected }}</div>
               <div class="kpi-text">Архив отклонённых материалов.</div>
             </div>
             <div class="kpi">
               <div class="kpi-label">Показано сейчас</div>
-              <div class="kpi-value">{{ filteredItems.length }}</div>
-              <div class="kpi-text">Результат после поиска и фильтров.</div>
+              <div class="kpi-value">{{ items.length }}</div>
+              <div class="kpi-text">Карточки на текущей странице после фильтров.</div>
             </div>
           </div>
         </div>
@@ -73,7 +73,7 @@
           <section class="panel p-5">
             <div class="sidebar-title">Раздел</div>
             <p class="sidebar-text">
-              Переключайся между очередями. Число справа показывает количество материалов.
+              Переключайся между очередями. Число справа показывает общее количество материалов.
             </p>
 
             <div class="mt-4 grid gap-3">
@@ -82,7 +82,7 @@
                 :key="tab.key"
                 class="tab-btn w-full justify-between"
                 :class="selectedTab === tab.key ? 'tab-btn-active' : ''"
-                @click="selectedTab = tab.key"
+                @click="selectTab(tab.key)"
               >
                 <span>{{ tab.label }}</span>
                 <span class="meta-chip">{{ tab.count }}</span>
@@ -93,7 +93,7 @@
           <section class="panel p-5">
             <div class="sidebar-title">Поиск</div>
             <p class="sidebar-text">
-              Ищи по Twitch, Telegram, тексту и ссылкам.
+              Ищи по Twitch, Telegram, тексту и ссылкам. Поиск идёт по серверу, а не только по текущей странице.
             </p>
 
             <div class="mt-4">
@@ -117,7 +117,7 @@
                 :key="filter.key"
                 class="filter-chip"
                 :class="quickFilter === filter.key ? 'filter-chip-active' : ''"
-                @click="quickFilter = filter.key"
+                @click="setQuickFilter(filter.key)"
               >
                 {{ filter.label }}
               </button>
@@ -144,8 +144,8 @@
                 <div class="info-value">{{ currentTitle }}</div>
               </div>
               <div class="info-row">
-                <div class="kpi-label">Последний материал</div>
-                <div class="info-value">{{ latestSubmissionText }}</div>
+                <div class="kpi-label">Всего найдено</div>
+                <div class="info-value">{{ currentTotal }} материалов</div>
               </div>
               <div class="info-row">
                 <div class="kpi-label">Режим публикации</div>
@@ -170,9 +170,27 @@
               </div>
 
               <div class="helper-row">
-                <span class="helper-pill">{{ filteredItems.length }} материалов</span>
+                <span class="helper-pill">{{ currentTotal }} найдено</span>
                 <span class="helper-pill">{{ searchQuery ? 'Поиск включён' : 'Без поиска' }}</span>
                 <span class="helper-pill">{{ quickFilterLabel }}</span>
+                <span class="helper-pill">Страница {{ page }} / {{ totalPages }}</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="panel p-5 md:p-6">
+            <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+              <div class="text-sm text-slate-400">
+                Показаны материалы с {{ itemRangeStart }} по {{ itemRangeEnd }} из {{ currentTotal }}.
+              </div>
+
+              <div class="flex flex-wrap gap-3">
+                <button class="btn-secondary btn-small" :disabled="page <= 1 || loading" @click="prevPage">
+                  Назад
+                </button>
+                <button class="btn-secondary btn-small" :disabled="page >= totalPages || loading" @click="nextPage">
+                  Вперёд
+                </button>
               </div>
             </div>
           </div>
@@ -181,15 +199,16 @@
             <div class="text-sm text-slate-300">Загружаю материалы...</div>
           </div>
 
-          <div v-else-if="filteredItems.length" class="grid gap-4">
+          <div v-else-if="items.length" class="grid gap-4">
             <SubmissionCard
-              v-for="item in filteredItems"
+              v-for="item in items"
               :key="item.id"
               :item="item"
-              :show-actions="selectedTab === 'pending'"
+              :show-actions="true"
               @approve="approve"
-              @reject="reject"
-              @ban="ban"
+              @reject="openRejectModal"
+              @ban="openBanModal"
+              @unban="openUnbanModal"
             />
           </div>
 
@@ -203,32 +222,85 @@
         </section>
       </div>
     </div>
+
+    <AdminActionModal
+      :open="rejectModal.open"
+      title="Отклонить материал"
+      description="Укажи понятную причину. Она сохранится в карточке и поможет разобраться позже."
+      submit-text="Отклонить материал"
+      placeholder="Например: не подходит по теме, недостаточно данных, дубликат, нарушение правил..."
+      input-label="Причина отклонения"
+      :required="true"
+      :danger="true"
+      :loading="actionLoading"
+      @close="closeRejectModal"
+      @submit="submitReject"
+    />
+
+    <AdminActionModal
+      :open="banModal.open"
+      title="Заблокировать автора"
+      description="Причина блокировки покажется модераторам и будет доступна в карточке пользователя."
+      submit-text="Заблокировать"
+      placeholder="Например: спам, флуд, неоднократные нарушения правил..."
+      input-label="Причина блокировки"
+      :required="true"
+      :danger="true"
+      :loading="actionLoading"
+      @close="closeBanModal"
+      @submit="submitBan"
+    />
+
+    <AdminActionModal
+      :open="unbanModal.open"
+      title="Разблокировать автора"
+      description="Подтверди снятие блокировки. Причина блокировки будет очищена."
+      submit-text="Разблокировать"
+      :with-input="false"
+      :danger="false"
+      :loading="actionLoading"
+      @close="closeUnbanModal"
+      @submit="submitUnban"
+    />
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import api from '../api/client'
 import SubmissionCard from '../components/SubmissionCard.vue'
+import AdminActionModal from '../components/AdminActionModal.vue'
 
 const router = useRouter()
 
-const pending = ref([])
-const approved = ref([])
-const rejected = ref([])
+const items = ref([])
 const moderationEnabled = ref(true)
 const selectedTab = ref('pending')
 const searchQuery = ref('')
 const quickFilter = ref('all')
 const loading = ref(false)
+const actionLoading = ref(false)
+const page = ref(1)
+const pageSize = 20
+const currentTotal = ref(0)
+const counts = ref({
+  pending: 0,
+  approved: 0,
+  rejected: 0,
+})
 
 const notice = ref({
   text: '',
   typeClass: 'notice-success',
 })
 
+const rejectModal = ref({ open: false, item: null })
+const banModal = ref({ open: false, user: null })
+const unbanModal = ref({ open: false, user: null })
+
 let noticeTimeout = null
+let searchDebounce = null
 
 const setNotice = (text, type = 'success') => {
   clearTimeout(noticeTimeout)
@@ -249,66 +321,12 @@ const setNotice = (text, type = 'success') => {
   }, 2600)
 }
 
-const loadAll = async () => {
-  loading.value = true
-  try {
-    const [p1, p2, p3, s] = await Promise.all([
-      api.get('/admin/submissions?status=pending'),
-      api.get('/admin/submissions?status=approved'),
-      api.get('/admin/submissions?status=rejected'),
-      api.get('/admin/settings/moderation'),
-    ])
-
-    pending.value = p1.data
-    approved.value = p2.data
-    rejected.value = p3.data
-    moderationEnabled.value = s.data.moderation_enabled
-  } finally {
-    loading.value = false
-  }
-}
-
-const datasetMap = computed(() => ({
-  pending: pending.value,
-  approved: approved.value,
-  rejected: rejected.value,
-}))
-
-const baseItems = computed(() => datasetMap.value[selectedTab.value] || [])
-
-const filteredItems = computed(() => {
-  const q = searchQuery.value.trim().toLowerCase()
-
-  let items = baseItems.value.filter((item) => {
-    const haystack = [
-      item?.user?.twitch_nickname,
-      item?.user?.username,
-      item?.user?.first_name,
-      item?.user?.last_name,
-      item?.message_text,
-      ...(item?.links || []),
-    ]
-      .filter(Boolean)
-      .join(' ')
-      .toLowerCase()
-
-    return !q || haystack.includes(q)
-  })
-
-  if (quickFilter.value === 'withText') {
-    items = items.filter((item) => item?.message_text)
-  }
-
-  if (quickFilter.value === 'withMedia') {
-    items = items.filter((item) => item?.attachments?.length)
-  }
-
-  if (quickFilter.value === 'withLinks') {
-    items = items.filter((item) => item?.links?.length)
-  }
-
-  return items
-})
+const quickFilters = [
+  { key: 'all', label: 'Все' },
+  { key: 'withText', label: 'С текстом' },
+  { key: 'withMedia', label: 'С файлами' },
+  { key: 'withLinks', label: 'Со ссылками' },
+]
 
 const labels = {
   pending: {
@@ -325,13 +343,6 @@ const labels = {
   },
 }
 
-const quickFilters = [
-  { key: 'all', label: 'Все' },
-  { key: 'withText', label: 'С текстом' },
-  { key: 'withMedia', label: 'С файлами' },
-  { key: 'withLinks', label: 'Со ссылками' },
-]
-
 const quickFilterLabelMap = {
   all: 'Все материалы',
   withText: 'Только с текстом',
@@ -339,83 +350,211 @@ const quickFilterLabelMap = {
   withLinks: 'Только со ссылками',
 }
 
-const quickFilterLabel = computed(() => quickFilterLabelMap[quickFilter.value] || 'Все материалы')
-
 const tabs = computed(() => [
-  { key: 'pending', label: 'Ждут проверки', count: pending.value.length },
-  { key: 'approved', label: 'Одобренные', count: approved.value.length },
-  { key: 'rejected', label: 'Отклонённые', count: rejected.value.length },
+  { key: 'pending', label: 'Ждут проверки', count: counts.value.pending },
+  { key: 'approved', label: 'Одобренные', count: counts.value.approved },
+  { key: 'rejected', label: 'Отклонённые', count: counts.value.rejected },
 ])
 
 const currentTitle = computed(() => labels[selectedTab.value]?.title || '')
 const currentSubtitle = computed(() => labels[selectedTab.value]?.subtitle || '')
-const totalCount = computed(() => pending.value.length + approved.value.length + rejected.value.length)
-
-const latestSubmission = computed(() => {
-  return [...pending.value, ...approved.value, ...rejected.value]
-    .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0] || null
-})
-
-const latestSubmissionText = computed(() => {
-  if (!latestSubmission.value) return 'Пока материалов нет.'
-  return latestSubmission.value.message_text?.slice(0, 120)
-    || `Материал от ${latestSubmission.value.user?.twitch_nickname || 'пользователя'} без текста.`
-})
-
+const quickFilterLabel = computed(() => quickFilterLabelMap[quickFilter.value] || 'Все материалы')
+const totalCount = computed(() => counts.value.pending + counts.value.approved + counts.value.rejected)
+const totalPages = computed(() => Math.max(Math.ceil(currentTotal.value / pageSize), 1))
+const itemRangeStart = computed(() => (currentTotal.value ? (page.value - 1) * pageSize + 1 : 0))
+const itemRangeEnd = computed(() => Math.min(page.value * pageSize, currentTotal.value))
 const latestTimestamp = computed(() => {
-  if (!latestSubmission.value) return 'Новых поступлений пока нет'
-  return `Последнее поступление: ${new Date(latestSubmission.value.created_at).toLocaleString('ru-RU')}`
+  const firstItem = items.value[0]
+  if (!firstItem) return 'Новых поступлений на этой странице нет'
+  return `Последнее поступление: ${new Date(firstItem.created_at).toLocaleString('ru-RU')}`
 })
+
+const buildParams = (statusKey, extra = {}) => {
+  const params = new URLSearchParams()
+  params.set('status', statusKey)
+  params.set('limit', String(extra.limit ?? pageSize))
+  params.set('offset', String(extra.offset ?? (page.value - 1) * pageSize))
+
+  const q = searchQuery.value.trim()
+  if (q) params.set('q', q)
+
+  if (quickFilter.value === 'withText') params.set('has_text', 'true')
+  if (quickFilter.value === 'withMedia') params.set('has_attachments', 'true')
+  if (quickFilter.value === 'withLinks') params.set('has_links', 'true')
+
+  return params
+}
+
+const loadCounts = async () => {
+  const [pendingRes, approvedRes, rejectedRes] = await Promise.all([
+    api.get(`/admin/submissions?${buildParams('pending', { limit: 1, offset: 0 }).toString()}`),
+    api.get(`/admin/submissions?${buildParams('approved', { limit: 1, offset: 0 }).toString()}`),
+    api.get(`/admin/submissions?${buildParams('rejected', { limit: 1, offset: 0 }).toString()}`),
+  ])
+
+  counts.value = {
+    pending: pendingRes.data.total || 0,
+    approved: approvedRes.data.total || 0,
+    rejected: rejectedRes.data.total || 0,
+  }
+}
+
+const loadCurrentPage = async () => {
+  loading.value = true
+  try {
+    const [listRes, moderationRes] = await Promise.all([
+      api.get(`/admin/submissions?${buildParams(selectedTab.value).toString()}`),
+      api.get('/admin/settings/moderation'),
+    ])
+
+    items.value = listRes.data.items || []
+    currentTotal.value = listRes.data.total || 0
+    moderationEnabled.value = moderationRes.data.moderation_enabled
+  } finally {
+    loading.value = false
+  }
+}
+
+const reloadAll = async () => {
+  try {
+    await Promise.all([loadCounts(), loadCurrentPage()])
+  } catch {
+    logout()
+  }
+}
+
+const runSearchRefresh = () => {
+  clearTimeout(searchDebounce)
+  searchDebounce = setTimeout(async () => {
+    page.value = 1
+    await reloadAll()
+  }, 320)
+}
+
+const selectTab = async (tabKey) => {
+  selectedTab.value = tabKey
+  page.value = 1
+  await loadCurrentPage()
+}
+
+const setQuickFilter = async (filterKey) => {
+  quickFilter.value = filterKey
+}
 
 const approve = async (item) => {
+  actionLoading.value = true
   try {
     await api.post(`/admin/submissions/${item.id}/approve`, { comment: null })
-    await loadAll()
+    await reloadAll()
     setNotice(`Материал #${item.id} одобрен.`, 'success')
   } catch (e) {
     setNotice(e?.response?.data?.detail || 'Не удалось одобрить материал.', 'error')
+  } finally {
+    actionLoading.value = false
   }
 }
 
-const reject = async (item) => {
-  const comment = window.prompt('Укажи причину отклонения:', '')
-  if (comment === null) return
+const openRejectModal = (item) => {
+  rejectModal.value = { open: true, item }
+}
 
+const closeRejectModal = () => {
+  rejectModal.value = { open: false, item: null }
+}
+
+const submitReject = async (comment) => {
+  if (!rejectModal.value.item) return
+
+  actionLoading.value = true
   try {
-    await api.post(`/admin/submissions/${item.id}/reject`, { comment })
-    await loadAll()
-    setNotice(`Материал #${item.id} отклонён.`, 'warning')
+    await api.post(`/admin/submissions/${rejectModal.value.item.id}/reject`, { comment })
+    closeRejectModal()
+    await reloadAll()
+    setNotice(`Материал #${rejectModal.value.item?.id || ''} отклонён.`, 'warning')
   } catch (e) {
     setNotice(e?.response?.data?.detail || 'Не удалось отклонить материал.', 'error')
+  } finally {
+    actionLoading.value = false
   }
 }
 
-const ban = async (user) => {
-  const reason = window.prompt('Причина блокировки:', 'Нарушение правил')
-  if (reason === null) return
+const openBanModal = (user) => {
+  banModal.value = { open: true, user }
+}
 
+const closeBanModal = () => {
+  banModal.value = { open: false, user: null }
+}
+
+const submitBan = async (reason) => {
+  if (!banModal.value.user) return
+
+  actionLoading.value = true
   try {
-    await api.post(`/admin/users/${user.id}/ban`, { reason })
-    await loadAll()
-    setNotice(`Пользователь ${user?.twitch_nickname || user?.telegram_id} заблокирован.`, 'warning')
+    await api.post(`/admin/users/${banModal.value.user.id}/ban`, { reason })
+    closeBanModal()
+    await reloadAll()
+    setNotice(`Пользователь ${banModal.value.user?.twitch_nickname || banModal.value.user?.telegram_id} заблокирован.`, 'warning')
   } catch (e) {
     setNotice(e?.response?.data?.detail || 'Не удалось заблокировать пользователя.', 'error')
+  } finally {
+    actionLoading.value = false
+  }
+}
+
+const openUnbanModal = (user) => {
+  unbanModal.value = { open: true, user }
+}
+
+const closeUnbanModal = () => {
+  unbanModal.value = { open: false, user: null }
+}
+
+const submitUnban = async () => {
+  if (!unbanModal.value.user) return
+
+  actionLoading.value = true
+  try {
+    await api.post(`/admin/users/${unbanModal.value.user.id}/unban`)
+    closeUnbanModal()
+    await reloadAll()
+    setNotice(`Пользователь ${unbanModal.value.user?.twitch_nickname || unbanModal.value.user?.telegram_id} разблокирован.`, 'success')
+  } catch (e) {
+    setNotice(e?.response?.data?.detail || 'Не удалось разблокировать пользователя.', 'error')
+  } finally {
+    actionLoading.value = false
   }
 }
 
 const toggleModeration = async () => {
+  actionLoading.value = true
   try {
-    await api.post('/admin/settings/moderation', { moderation_enabled: !moderationEnabled.value })
-    await loadAll()
+    const newValue = !moderationEnabled.value
+    await api.post('/admin/settings/moderation', { moderation_enabled: newValue })
+    moderationEnabled.value = newValue
     setNotice(
-      moderationEnabled.value
+      newValue
         ? 'Очередь модерации включена.'
         : 'Очередь модерации выключена. Материалы публикуются сразу.',
       'success',
     )
   } catch (e) {
     setNotice(e?.response?.data?.detail || 'Не удалось переключить режим публикации.', 'error')
+  } finally {
+    actionLoading.value = false
   }
+}
+
+const prevPage = async () => {
+  if (page.value <= 1) return
+  page.value -= 1
+  await loadCurrentPage()
+}
+
+const nextPage = async () => {
+  if (page.value >= totalPages.value) return
+  page.value += 1
+  await loadCurrentPage()
 }
 
 const logout = () => {
@@ -423,9 +562,12 @@ const logout = () => {
   router.push('/login')
 }
 
+watch(searchQuery, runSearchRefresh)
+watch(quickFilter, runSearchRefresh)
+
 onMounted(async () => {
   try {
-    await loadAll()
+    await reloadAll()
   } catch {
     logout()
   }

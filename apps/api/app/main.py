@@ -4,10 +4,6 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import auth, admin, stream, bot_ingest, settings
 from app.core.config import settings as app_settings
-from app.db.session import engine
-from app.db.base import Base
-
-Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title=app_settings.app_name)
 

@@ -4,8 +4,10 @@ from aiogram import F, Router
 from aiogram.types import Message
 
 from muhanjan_bot import texts
+from muhanjan_bot.config import settings
 from muhanjan_bot.keyboards.reply import main_menu_keyboard
 from muhanjan_bot.services.api import BotApiError
+from muhanjan_bot.services.files import BotFileValidationError
 from muhanjan_bot.services.limits import acquire_submission_cooldown, register_submission_message
 from muhanjan_bot.services.submissions import (
     build_submission_payload,
@@ -18,7 +20,7 @@ from muhanjan_bot.utils.formatters import format_ban_reason, format_seconds, htm
 router = Router(name="submissions")
 
 
-@router.message(F.content_type.in_({"text", "photo", "document", "video"}))
+@router.message(F.content_type.in_({"text", "photo", "document", "video", "audio", "voice", "animation"}))
 async def handle_submission(message: Message) -> None:
     try:
         state = await fetch_user_state(message.from_user.id)
@@ -64,6 +66,13 @@ async def handle_submission(message: Message) -> None:
     try:
         payload = await build_submission_payload(message.bot, message)
         result = await send_submission(payload)
+    except BotFileValidationError:
+        max_size_mb = max(settings.max_upload_file_size_bytes // (1024 * 1024), 1)
+        await message.answer(
+            texts.FILE_TOO_LARGE_MESSAGE.format(max_size_mb=max_size_mb),
+            reply_markup=main_menu_keyboard(),
+        )
+        return
     except BotApiError:
         await message.answer(texts.API_TEMPORARY_UNAVAILABLE, reply_markup=main_menu_keyboard())
         return

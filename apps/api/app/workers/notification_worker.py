@@ -13,7 +13,7 @@ from app.services.notification_sender import (
     build_rejected_text,
     send_telegram_text,
 )
-from app.services.runtime_redis import get_blocking_redis, reset_blocking_redis
+from app.services.runtime_redis import get_blocking_redis, get_redis, reset_blocking_redis
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +30,18 @@ def _build_text(job: dict) -> str | None:
     return None
 
 
+def _write_heartbeat(now_ts: int) -> None:
+    try:
+        redis = get_redis()
+        redis.set(
+            settings.notification_worker_heartbeat_key,
+            str(now_ts),
+            ex=settings.notification_worker_stale_after_seconds * 3,
+        )
+    except Exception:
+        logger.exception("Failed to write notification worker heartbeat")
+
+
 def run_worker() -> None:
     logging.basicConfig(
         level=logging.INFO,
@@ -38,11 +50,17 @@ def run_worker() -> None:
 
     redis = get_blocking_redis()
     queue_keys = [settings.notification_retry_queue_key, settings.notification_queue_key]
+    last_heartbeat_ts = 0
 
     logger.info("Notification worker started")
 
     while True:
         try:
+            now_ts = int(time.time())
+            if now_ts - last_heartbeat_ts >= settings.notification_worker_heartbeat_interval_seconds:
+                _write_heartbeat(now_ts)
+                last_heartbeat_ts = now_ts
+
             item = redis.brpop(
                 queue_keys,
                 timeout=settings.notification_worker_block_timeout_seconds,

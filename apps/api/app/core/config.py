@@ -37,10 +37,21 @@ class Settings(BaseSettings):
     redis_blocking_socket_timeout_seconds: int = 15
     notification_worker_block_timeout_seconds: int = 5
 
+    notification_worker_heartbeat_key: str = "mn:worker:notifications:heartbeat"
+    notification_worker_heartbeat_interval_seconds: int = 10
+    notification_worker_stale_after_seconds: int = 35
+
     max_attachment_file_size_bytes: int = 20 * 1024 * 1024
 
     auth_login_rate_limit_attempts: int = 5
     auth_login_rate_limit_window_seconds: int = 900
+
+    admin_auto_refresh_default_seconds: int = 15
+
+    db_pool_size: int = 20
+    db_max_overflow: int = 20
+    db_pool_timeout_seconds: int = 10
+    db_pool_recycle_seconds: int = 1800
 
     model_config = SettingsConfigDict(
         env_file=str(ENV_FILE),

@@ -97,11 +97,24 @@ def get_submission_stats(
         has_links=has_links,
     )
 
+    grouped = dict(
+        filtered_query.with_entities(
+            Submission.status,
+            func.count(Submission.id),
+        )
+        .group_by(Submission.status)
+        .all()
+    )
+
+    pending = int(grouped.get("pending", 0))
+    approved = int(grouped.get("approved", 0))
+    rejected = int(grouped.get("rejected", 0))
+
     return {
-        "pending": filtered_query.filter(Submission.status == "pending").count(),
-        "approved": filtered_query.filter(Submission.status == "approved").count(),
-        "rejected": filtered_query.filter(Submission.status == "rejected").count(),
-        "total": filtered_query.count(),
+        "pending": pending,
+        "approved": approved,
+        "rejected": rejected,
+        "total": pending + approved + rejected,
     }
 
 
@@ -132,15 +145,20 @@ def list_submissions(
         has_links=has_links,
     )
 
-    total = filtered_query.order_by(None).count()
+    total = (
+        filtered_query.with_entities(func.count(Submission.id))
+        .order_by(None)
+        .scalar()
+        or 0
+    )
     items = filtered_query.offset(offset).limit(limit).all()
 
     return {
         "items": [submission_to_schema(item).model_dump() for item in items],
-        "total": total,
+        "total": int(total),
         "limit": limit,
         "offset": offset,
-        "has_more": offset + len(items) < total,
+        "has_more": offset + len(items) < int(total),
     }
 
 

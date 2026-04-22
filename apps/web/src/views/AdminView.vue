@@ -22,6 +22,7 @@
                 </span>
                 <span class="meta-chip">{{ totalCount }} материалов</span>
                 <span class="meta-chip">{{ latestTimestamp }}</span>
+                <span class="meta-chip">{{ autoRefreshLabel }}</span>
               </div>
             </div>
 
@@ -29,12 +30,19 @@
               <router-link to="/stream" class="btn-secondary" title="Открыть эфирную ленту">
                 Открыть эфир
               </router-link>
-              <button class="btn-secondary" :disabled="loading" @click="reloadAll">
-                {{ loading ? 'Обновление...' : 'Обновить' }}
+
+              <button class="btn-secondary" :disabled="loading || refreshInFlight" @click="reloadAll">
+                {{ loading || refreshInFlight ? 'Обновление...' : 'Обновить' }}
               </button>
-              <button class="btn-secondary" :disabled="actionLoading" @click="toggleModeration">
+
+              <button class="btn-secondary" :disabled="actionLoading || refreshInFlight" @click="toggleAutoRefresh">
+                {{ autoRefreshEnabled ? 'Пауза автообновления' : 'Включить автообновление' }}
+              </button>
+
+              <button class="btn-secondary" :disabled="actionLoading || refreshInFlight" @click="toggleModeration">
                 {{ moderationEnabled ? 'Выключить очередь' : 'Включить очередь' }}
               </button>
+
               <button class="btn-ghost" @click="logout">Выйти</button>
             </div>
           </div>
@@ -59,6 +67,45 @@
               <div class="kpi-label">Показано сейчас</div>
               <div class="kpi-value">{{ items.length }}</div>
               <div class="kpi-text">Карточки на текущей странице после фильтров.</div>
+            </div>
+          </div>
+
+          <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            <div class="panel p-5">
+              <div class="kpi-label">Готовность API</div>
+              <div class="mt-2 flex items-center gap-2">
+                <span class="badge" :class="monitoring.ready ? 'badge-approved' : 'badge-rejected'">
+                  {{ monitoring.ready ? 'READY' : 'DEGRADED' }}
+                </span>
+              </div>
+              <div class="mt-3 text-sm text-slate-400">
+                DB: {{ monitoring.database.ok ? 'ok' : 'ошибка' }},
+                Redis: {{ monitoring.redis.ok ? 'ok' : 'ошибка' }}
+              </div>
+            </div>
+
+            <div class="panel p-5">
+              <div class="kpi-label">Очередь уведомлений</div>
+              <div class="kpi-value text-[1.8rem]">{{ monitoring.notifications.queue_main ?? '—' }}</div>
+              <div class="kpi-text">Основная очередь отправки уведомлений.</div>
+            </div>
+
+            <div class="panel p-5">
+              <div class="kpi-label">Retry очередь</div>
+              <div class="kpi-value text-[1.8rem]">{{ monitoring.notifications.queue_retry ?? '—' }}</div>
+              <div class="kpi-text">Задачи, которые требуют повторной отправки.</div>
+            </div>
+
+            <div class="panel p-5">
+              <div class="kpi-label">Worker уведомлений</div>
+              <div class="mt-2 flex items-center gap-2">
+                <span class="badge" :class="monitoring.notifications.worker_alive ? 'badge-approved' : 'badge-rejected'">
+                  {{ monitoring.notifications.worker_alive ? 'жив' : 'не отвечает' }}
+                </span>
+              </div>
+              <div class="mt-3 text-sm text-slate-400">
+                Возраст heartbeat: {{ workerAgeLabel }}
+              </div>
             </div>
           </div>
         </div>
@@ -125,33 +172,23 @@
           </section>
 
           <section class="panel p-5">
-            <div class="sidebar-title">Что делать модератору</div>
+            <div class="sidebar-title">Автообновление</div>
+            <p class="sidebar-text">
+              Когда вкладка активна, список, счётчики и мониторинг обновляются автоматически.
+            </p>
 
-            <ol class="guide-list mt-4">
-              <li>Открой материал из очереди.</li>
-              <li>Проверь текст, ссылки и файлы.</li>
-              <li>Открой профиль автора, если нужно больше контекста.</li>
-              <li>Прими решение и при необходимости заблокируй пользователя.</li>
-            </ol>
-          </section>
-
-          <section class="panel p-5">
-            <div class="sidebar-title">Сейчас открыто</div>
-
-            <div class="info-list mt-4">
+            <div class="mt-4 info-list">
               <div class="info-row">
-                <div class="kpi-label">Раздел</div>
-                <div class="info-value">{{ currentTitle }}</div>
+                <div class="kpi-label">Режим</div>
+                <div class="info-value">{{ autoRefreshEnabled ? 'Включён' : 'Выключен' }}</div>
               </div>
               <div class="info-row">
-                <div class="kpi-label">Всего найдено</div>
-                <div class="info-value">{{ currentTotal }} материалов</div>
+                <div class="kpi-label">Интервал</div>
+                <div class="info-value">{{ safeAutoRefreshSeconds }} сек.</div>
               </div>
               <div class="info-row">
-                <div class="kpi-label">Режим публикации</div>
-                <div class="info-value">
-                  {{ moderationEnabled ? 'Через модератора' : 'Сразу в эфир' }}
-                </div>
+                <div class="kpi-label">Последнее обновление</div>
+                <div class="info-value">{{ monitoringUpdatedAt }}</div>
               </div>
             </div>
           </section>
@@ -185,10 +222,10 @@
               </div>
 
               <div class="flex flex-wrap gap-3">
-                <button class="btn-secondary btn-small" :disabled="page <= 1 || loading" @click="prevPage">
+                <button class="btn-secondary btn-small" :disabled="page <= 1 || loading || refreshInFlight" @click="prevPage">
                   Назад
                 </button>
-                <button class="btn-secondary btn-small" :disabled="page >= totalPages || loading" @click="nextPage">
+                <button class="btn-secondary btn-small" :disabled="page >= totalPages || loading || refreshInFlight" @click="nextPage">
                   Вперёд
                 </button>
               </div>
@@ -274,11 +311,11 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import api from '../api/client'
-import AdminActionModal from '../components/AdminActionModal.vue'
 import SubmissionCard from '../components/SubmissionCard.vue'
+import AdminActionModal from '../components/AdminActionModal.vue'
 import UserDetailsModal from '../components/UserDetailsModal.vue'
 
 const router = useRouter()
@@ -290,6 +327,7 @@ const searchQuery = ref('')
 const quickFilter = ref('all')
 const loading = ref(false)
 const actionLoading = ref(false)
+const refreshInFlight = ref(false)
 const page = ref(1)
 const pageSize = 20
 const currentTotal = ref(0)
@@ -298,6 +336,22 @@ const counts = ref({
   approved: 0,
   rejected: 0,
 })
+
+const monitoring = ref({
+  ready: false,
+  database: { ok: false },
+  redis: { ok: false },
+  notifications: {
+    queue_main: 0,
+    queue_retry: 0,
+    worker_alive: false,
+    worker_age_seconds: null,
+  },
+})
+
+const monitoringUpdatedAt = ref('—')
+const autoRefreshEnabled = ref(true)
+const autoRefreshSeconds = ref(15)
 
 const notice = ref({
   text: '',
@@ -312,8 +366,19 @@ const userDetailsModal = ref({ open: false, details: null, loading: false })
 let noticeTimeout = null
 let searchDebounce = null
 let activeController = null
+let autoRefreshTimer = null
 
 const isCanceledError = (error) => error?.code === 'ERR_CANCELED' || error?.name === 'CanceledError'
+const isAuthError = (error) => [401, 403].includes(error?.response?.status)
+const errorMessage = (error, fallback) => error?.response?.data?.detail || fallback
+
+const safeAutoRefreshSeconds = computed(() => {
+  const value = Number(autoRefreshSeconds.value)
+  if (!Number.isFinite(value) || value < 5) {
+    return 15
+  }
+  return Math.floor(value)
+})
 
 const abortActiveRequest = () => {
   if (activeController) {
@@ -322,10 +387,11 @@ const abortActiveRequest = () => {
   }
 }
 
-const createRequestSignal = () => {
-  abortActiveRequest()
-  activeController = new AbortController()
-  return activeController.signal
+const clearAutoRefresh = () => {
+  if (autoRefreshTimer) {
+    clearTimeout(autoRefreshTimer)
+    autoRefreshTimer = null
+  }
 }
 
 const setNotice = (text, type = 'success') => {
@@ -389,19 +455,35 @@ const totalCount = computed(() => counts.value.pending + counts.value.approved +
 const totalPages = computed(() => Math.max(Math.ceil(currentTotal.value / pageSize), 1))
 const itemRangeStart = computed(() => (currentTotal.value ? (page.value - 1) * pageSize + 1 : 0))
 const itemRangeEnd = computed(() => Math.min(page.value * pageSize, currentTotal.value))
+
 const latestTimestamp = computed(() => {
   const firstItem = items.value[0]
   if (!firstItem) return 'Новых поступлений на этой странице нет'
   return `Последнее поступление: ${new Date(firstItem.created_at).toLocaleString('ru-RU')}`
 })
 
+const autoRefreshLabel = computed(() => {
+  return autoRefreshEnabled.value
+    ? `Автообновление: каждые ${safeAutoRefreshSeconds.value} сек.`
+    : 'Автообновление отключено'
+})
+
+const workerAgeLabel = computed(() => {
+  const age = monitoring.value?.notifications?.worker_age_seconds
+  if (age === null || age === undefined) return 'нет данных'
+  return `${age} сек.`
+})
+
 const buildFilterParams = () => {
   const params = new URLSearchParams()
+
   const q = searchQuery.value.trim()
   if (q) params.set('q', q)
+
   if (quickFilter.value === 'withText') params.set('has_text', 'true')
   if (quickFilter.value === 'withMedia') params.set('has_attachments', 'true')
   if (quickFilter.value === 'withLinks') params.set('has_links', 'true')
+
   return params
 }
 
@@ -422,6 +504,12 @@ const loadStats = async (signal) => {
   }
 }
 
+const loadMonitoring = async (signal) => {
+  const { data } = await api.get('/admin/monitoring/summary', { signal })
+  monitoring.value = data
+  monitoringUpdatedAt.value = new Date().toLocaleTimeString('ru-RU')
+}
+
 const loadCurrentPage = async (signal) => {
   loading.value = true
   try {
@@ -438,24 +526,47 @@ const loadCurrentPage = async (signal) => {
   }
 }
 
-const reloadAll = async () => {
-  const signal = createRequestSignal()
+const performReload = async (mode = 'all') => {
+  if (refreshInFlight.value) return
+
+  refreshInFlight.value = true
+  const controller = new AbortController()
+  activeController = controller
+
   try {
-    await Promise.all([loadStats(signal), loadCurrentPage(signal)])
+    if (mode === 'page') {
+      await Promise.all([
+        loadCurrentPage(controller.signal),
+        loadMonitoring(controller.signal),
+      ])
+    } else {
+      await Promise.all([
+        loadStats(controller.signal),
+        loadCurrentPage(controller.signal),
+        loadMonitoring(controller.signal),
+      ])
+    }
   } catch (error) {
     if (isCanceledError(error)) return
-    logout()
+    if (isAuthError(error)) {
+      logout()
+      return
+    }
+    setNotice(errorMessage(error, 'Не удалось обновить данные панели.'), 'error')
+  } finally {
+    if (activeController === controller) {
+      activeController = null
+    }
+    refreshInFlight.value = false
   }
 }
 
+const reloadAll = async () => {
+  await performReload('all')
+}
+
 const reloadPageOnly = async () => {
-  const signal = createRequestSignal()
-  try {
-    await loadCurrentPage(signal)
-  } catch (error) {
-    if (isCanceledError(error)) return
-    logout()
-  }
+  await performReload('page')
 }
 
 const runSearchRefresh = () => {
@@ -463,7 +574,28 @@ const runSearchRefresh = () => {
   searchDebounce = setTimeout(async () => {
     page.value = 1
     await reloadAll()
-  }, 320)
+  }, 350)
+}
+
+const scheduleNextAutoRefresh = () => {
+  clearAutoRefresh()
+
+  if (!autoRefreshEnabled.value) return
+
+  autoRefreshTimer = setTimeout(async () => {
+    if (document.visibilityState === 'visible' && !refreshInFlight.value && !actionLoading.value) {
+      await reloadAll()
+    }
+    scheduleNextAutoRefresh()
+  }, safeAutoRefreshSeconds.value * 1000)
+}
+
+const startAutoRefresh = () => {
+  scheduleNextAutoRefresh()
+}
+
+const toggleAutoRefresh = () => {
+  autoRefreshEnabled.value = !autoRefreshEnabled.value
 }
 
 const selectTab = async (tabKey) => {
@@ -472,7 +604,7 @@ const selectTab = async (tabKey) => {
   await reloadPageOnly()
 }
 
-const setQuickFilter = async (filterKey) => {
+const setQuickFilter = (filterKey) => {
   quickFilter.value = filterKey
 }
 
@@ -493,12 +625,17 @@ const openUserDetails = async (user) => {
       loading: false,
     }
   } catch (e) {
+    if (isAuthError(e)) {
+      logout()
+      return
+    }
+
     userDetailsModal.value = {
       open: true,
       details: null,
       loading: false,
     }
-    setNotice(e?.response?.data?.detail || 'Не удалось загрузить профиль автора.', 'error')
+    setNotice(errorMessage(e, 'Не удалось загрузить профиль автора.'), 'error')
   }
 }
 
@@ -520,7 +657,11 @@ const approve = async (item) => {
     }
     setNotice(`Материал #${item.id} одобрен.`, 'success')
   } catch (e) {
-    setNotice(e?.response?.data?.detail || 'Не удалось одобрить материал.', 'error')
+    if (isAuthError(e)) {
+      logout()
+      return
+    }
+    setNotice(errorMessage(e, 'Не удалось одобрить материал.'), 'error')
   } finally {
     actionLoading.value = false
   }
@@ -548,7 +689,11 @@ const submitReject = async (comment) => {
     }
     setNotice(`Материал #${currentItem.id} отклонён.`, 'warning')
   } catch (e) {
-    setNotice(e?.response?.data?.detail || 'Не удалось отклонить материал.', 'error')
+    if (isAuthError(e)) {
+      logout()
+      return
+    }
+    setNotice(errorMessage(e, 'Не удалось отклонить материал.'), 'error')
   } finally {
     actionLoading.value = false
   }
@@ -576,7 +721,11 @@ const submitBan = async (reason) => {
     }
     setNotice(`Пользователь ${currentUser?.twitch_nickname || currentUser?.telegram_id} заблокирован.`, 'warning')
   } catch (e) {
-    setNotice(e?.response?.data?.detail || 'Не удалось заблокировать пользователя.', 'error')
+    if (isAuthError(e)) {
+      logout()
+      return
+    }
+    setNotice(errorMessage(e, 'Не удалось заблокировать пользователя.'), 'error')
   } finally {
     actionLoading.value = false
   }
@@ -604,7 +753,11 @@ const submitUnban = async () => {
     }
     setNotice(`Пользователь ${currentUser?.twitch_nickname || currentUser?.telegram_id} разблокирован.`, 'success')
   } catch (e) {
-    setNotice(e?.response?.data?.detail || 'Не удалось разблокировать пользователя.', 'error')
+    if (isAuthError(e)) {
+      logout()
+      return
+    }
+    setNotice(errorMessage(e, 'Не удалось разблокировать пользователя.'), 'error')
   } finally {
     actionLoading.value = false
   }
@@ -623,7 +776,11 @@ const toggleModeration = async () => {
       'success',
     )
   } catch (e) {
-    setNotice(e?.response?.data?.detail || 'Не удалось переключить режим публикации.', 'error')
+    if (isAuthError(e)) {
+      logout()
+      return
+    }
+    setNotice(errorMessage(e, 'Не удалось переключить режим публикации.'), 'error')
   } finally {
     actionLoading.value = false
   }
@@ -641,16 +798,39 @@ const nextPage = async () => {
   await reloadPageOnly()
 }
 
+const handleVisibilityChange = () => {
+  if (document.visibilityState === 'visible') {
+    scheduleNextAutoRefresh()
+  }
+}
+
 const logout = () => {
   abortActiveRequest()
+  clearAutoRefresh()
   localStorage.removeItem('mn_token')
   router.push('/login')
 }
 
 watch(searchQuery, runSearchRefresh)
 watch(quickFilter, runSearchRefresh)
+watch(autoRefreshEnabled, () => {
+  scheduleNextAutoRefresh()
+})
+watch(safeAutoRefreshSeconds, () => {
+  scheduleNextAutoRefresh()
+})
 
 onMounted(async () => {
   await reloadAll()
+  scheduleNextAutoRefresh()
+  document.addEventListener('visibilitychange', handleVisibilityChange)
+})
+
+onBeforeUnmount(() => {
+  abortActiveRequest()
+  clearAutoRefresh()
+  clearTimeout(searchDebounce)
+  clearTimeout(noticeTimeout)
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
 })
 </script>

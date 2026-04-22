@@ -7,7 +7,7 @@
         <div class="relative z-[1] flex flex-col gap-6">
           <div class="topbar">
             <div class="space-y-4">
-              <span class="eyebrow">MuhanjanNews · Эфирная лента</span>
+              <span class="eyebrow">Горбатые новости · Эфирная лента</span>
 
               <div class="max-w-4xl">
                 <h1 class="surface-title">Одобренные материалы для стрима</h1>

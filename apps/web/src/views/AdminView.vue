@@ -7,7 +7,7 @@
         <div class="relative z-[1] flex flex-col gap-6">
           <div class="topbar">
             <div class="space-y-4">
-              <span class="eyebrow">MuhanjanNews · Панель модерации</span>
+              <span class="eyebrow">Горбатые новости · Панель модерации</span>
 
               <div class="max-w-4xl">
                 <h1 class="surface-title">Проверка предложки без лишнего шума</h1>

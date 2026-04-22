@@ -6,7 +6,7 @@ ENV_FILE = BASE_DIR / ".env"
 
 
 class Settings(BaseSettings):
-    app_name: str = "MuhanjanNews API"
+    app_name: str = "Горбатые новости API"
     app_env: str = "production"
     debug: bool = False
     api_v1_prefix: str = "/api/v1"

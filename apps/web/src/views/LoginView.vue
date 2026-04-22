@@ -7,7 +7,7 @@
 
           <div class="relative z-[1] flex h-full flex-col justify-between gap-8">
             <div class="space-y-6">
-              <span class="eyebrow">MuhanjanNews</span>
+              <span class="eyebrow">Горбатые новости</span>
 
               <div class="max-w-3xl">
                 <h1 class="surface-title">

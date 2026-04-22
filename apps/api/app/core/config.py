@@ -1,6 +1,9 @@
 from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+BASE_DIR = Path(__file__).resolve().parents[2]
+ENV_FILE = BASE_DIR / ".env"
+
 
 class Settings(BaseSettings):
     app_name: str = "MuhanjanNews API"
@@ -23,11 +26,26 @@ class Settings(BaseSettings):
 
     telegram_bot_token: str | None = None
     telegram_parse_mode: str = "HTML"
-    telegram_request_timeout_seconds: int = 5
+    telegram_request_timeout_seconds: int = 10
+    telegram_proxy_url: str | None = None
+
+    redis_url: str = "redis://localhost:6379/0"
+    notification_queue_key: str = "mn:queue:notifications"
+    notification_retry_queue_key: str = "mn:queue:notifications:retry"
+
+    redis_socket_timeout_seconds: int = 2
+    redis_blocking_socket_timeout_seconds: int = 15
+    notification_worker_block_timeout_seconds: int = 5
 
     max_attachment_file_size_bytes: int = 20 * 1024 * 1024
 
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    auth_login_rate_limit_attempts: int = 5
+    auth_login_rate_limit_window_seconds: int = 900
+
+    model_config = SettingsConfigDict(
+        env_file=str(ENV_FILE),
+        extra="ignore",
+    )
 
     @property
     def upload_dir_path(self) -> Path:

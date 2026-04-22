@@ -10,8 +10,10 @@ from aiogram.types import Message
 from muhanjan_bot import texts
 from muhanjan_bot.keyboards.reply import main_menu_keyboard
 from muhanjan_bot.services.api import BotApiError
+from muhanjan_bot.services.drafts import draft_has_content, format_ttl_text, get_draft_payload, get_draft_ttl
 from muhanjan_bot.services.submissions import fetch_recent_submissions, human_status
 from muhanjan_bot.services.users import ensure_remote_user, fetch_user_state
+from muhanjan_bot.states.draft import DraftState
 from muhanjan_bot.states.profile import ProfileState
 from muhanjan_bot.utils.formatters import format_ban_reason, html_safe
 
@@ -69,6 +71,28 @@ async def _send_recent(message: Message) -> None:
 
     await message.answer(
         texts.RECENT_SUBMISSIONS_HEADER.format(items=_format_recent_items(items)),
+        reply_markup=main_menu_keyboard(),
+    )
+
+
+async def _send_draft_status(message: Message) -> None:
+    draft = await get_draft_payload(message.from_user.id)
+    if not draft_has_content(draft):
+        await message.answer(texts.DRAFT_NOT_FOUND, reply_markup=main_menu_keyboard())
+        return
+
+    ttl = await get_draft_ttl(message.from_user.id)
+    text_state = "есть" if (draft.get("message_text") or "").strip() else "нет"
+    links_count = len(draft.get("links") or [])
+    attachments_count = len(draft.get("attachments") or [])
+
+    await message.answer(
+        texts.DRAFT_SUMMARY_TEMPLATE.format(
+            text_state=text_state,
+            links_count=links_count,
+            attachments_count=attachments_count,
+            ttl_text=format_ttl_text(ttl),
+        ),
         reply_markup=main_menu_keyboard(),
     )
 
@@ -147,6 +171,22 @@ async def recent_command(message: Message) -> None:
     await _send_recent(message)
 
 
+@router.message(Command("draft_status"))
+async def draft_status_command(message: Message) -> None:
+    await _send_draft_status(message)
+
+
+@router.message(Command("append_draft"))
+async def append_draft_command(message: Message, state: FSMContext) -> None:
+    draft = await get_draft_payload(message.from_user.id)
+    if not draft_has_content(draft):
+        await message.answer(texts.DRAFT_NOT_FOUND, reply_markup=main_menu_keyboard())
+        return
+
+    await state.set_state(DraftState.waiting_text_append)
+    await message.answer(texts.DRAFT_APPEND_PROMPT, reply_markup=main_menu_keyboard())
+
+
 @router.message(Command("twitch"))
 async def twitch_command(message: Message, state: FSMContext) -> None:
     try:
@@ -183,6 +223,16 @@ async def status_button(message: Message) -> None:
 @router.message(lambda message: (message.text or "").strip() == texts.MENU_RECENT)
 async def recent_button(message: Message) -> None:
     await _send_recent(message)
+
+
+@router.message(lambda message: (message.text or "").strip() == texts.MENU_DRAFT_STATUS)
+async def draft_status_button(message: Message) -> None:
+    await _send_draft_status(message)
+
+
+@router.message(lambda message: (message.text or "").strip() == texts.MENU_APPEND_DRAFT)
+async def append_draft_button(message: Message, state: FSMContext) -> None:
+    await append_draft_command(message, state)
 
 
 @router.message(lambda message: (message.text or "").strip() == texts.MENU_CHANGE_TWITCH)

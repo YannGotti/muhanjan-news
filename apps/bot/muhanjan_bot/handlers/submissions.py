@@ -15,6 +15,7 @@ from muhanjan_bot.services.api import BotApiError
 from muhanjan_bot.services.drafts import (
     acquire_album_notice,
     append_album_part,
+    append_text_to_draft,
     clear_draft_payload,
     draft_has_content,
     get_draft_payload,
@@ -28,6 +29,7 @@ from muhanjan_bot.services.submissions import (
     send_submission,
 )
 from muhanjan_bot.services.users import ensure_remote_user, fetch_user_state
+from muhanjan_bot.states.draft import DraftState
 from muhanjan_bot.states.submission import SubmissionState
 from muhanjan_bot.utils.formatters import format_ban_reason, format_seconds, html_safe
 
@@ -122,6 +124,24 @@ async def _open_payload_preview(
     await message.answer(body, reply_markup=submission_preview_keyboard())
 
 
+@router.message(StateFilter(DraftState.waiting_text_append), F.text)
+async def append_text_to_current_draft(message: Message, state: FSMContext) -> None:
+    draft = await get_draft_payload(message.from_user.id)
+    if not draft_has_content(draft):
+        await state.clear()
+        await message.answer(texts.DRAFT_NOT_FOUND, reply_markup=main_menu_keyboard())
+        return
+
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer(texts.DRAFT_APPEND_EMPTY, reply_markup=main_menu_keyboard())
+        return
+
+    await append_text_to_draft(message.from_user.id, text)
+    await state.clear()
+    await message.answer(texts.DRAFT_APPEND_SUCCESS, reply_markup=main_menu_keyboard())
+
+
 @router.message(Command("draft"))
 async def draft_command(message: Message, state: FSMContext) -> None:
     user_state = await _ensure_submission_permissions(message)
@@ -180,7 +200,7 @@ async def handle_media_group_submission(message: Message, state: FSMContext) -> 
         await message.answer(texts.API_TEMPORARY_UNAVAILABLE, reply_markup=main_menu_keyboard())
         return
 
-    await append_album_part(
+    _, replaced = await append_album_part(
         user_id=message.from_user.id,
         media_group_id=str(message.media_group_id),
         part=payload_part,
@@ -189,7 +209,8 @@ async def handle_media_group_submission(message: Message, state: FSMContext) -> 
     should_notify = await acquire_album_notice(message.from_user.id, str(message.media_group_id))
     if should_notify:
         await state.clear()
-        await message.answer(texts.DRAFT_CREATED_ALBUM, reply_markup=main_menu_keyboard())
+        text = texts.DRAFT_REPLACED_ALBUM if replaced else texts.DRAFT_CREATED_ALBUM
+        await message.answer(text, reply_markup=main_menu_keyboard())
 
 
 @router.message(F.content_type.in_({"text", "photo", "document", "video", "audio", "voice", "animation"}))

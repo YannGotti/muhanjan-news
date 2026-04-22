@@ -1,7 +1,7 @@
 <template>
-  <div class="shell text-white">
-    <div class="surface-grid">
-      <section class="panel-strong">
+  <div class="shell text-white" :class="{ 'obs-shell': isCleanMode }">
+    <div class="surface-grid" :class="{ 'obs-grid': isCleanMode }">
+      <section v-if="!isCleanMode" class="panel-strong">
         <div class="hero-glow"></div>
 
         <div class="relative z-[1] flex flex-col gap-6">
@@ -57,7 +57,7 @@
         </div>
       </section>
 
-      <div class="panel p-5 md:p-6">
+      <div v-if="!isCleanMode" class="panel p-5 md:p-6">
         <div class="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div>
             <div class="sidebar-title">Фильтры ленты</div>
@@ -88,7 +88,7 @@
         </div>
       </div>
 
-      <section v-if="featuredItem" class="panel p-5 md:p-6">
+      <section v-if="!isCleanMode && featuredItem" class="panel p-5 md:p-6">
         <div class="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
           <div>
             <div class="eyebrow">Первый материал в ленте</div>
@@ -111,6 +111,20 @@
         <div class="text-sm text-slate-300">Загружаю эфирную ленту...</div>
       </section>
 
+      <section v-else-if="isObsMode && currentObsItem" class="obs-stage">
+        <div class="obs-meta">
+          <span class="obs-chip">Эфирный режим</span>
+          <span class="obs-chip">Материал #{{ currentObsItem.id }}</span>
+          <span class="obs-chip">{{ currentObsItem.user?.twitch_nickname || 'Без Twitch-ника' }}</span>
+        </div>
+
+        <SubmissionCard :item="currentObsItem" />
+
+        <div v-if="obsRotationEnabled" class="obs-footer">
+          Автопереключение каждые {{ rotationIntervalSeconds }} сек. · Автообновление каждые {{ refreshIntervalSeconds }} сек.
+        </div>
+      </section>
+
       <section v-else-if="filteredFeed.length" class="grid gap-4">
         <SubmissionCard v-for="item in filteredFeed" :key="item.id" :item="item" />
       </section>
@@ -127,15 +141,22 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import api from '../api/client'
 import SubmissionCard from '../components/SubmissionCard.vue'
+
+const route = useRoute()
 
 const feed = ref([])
 const searchQuery = ref('')
 const refreshedAt = ref('—')
 const quickFilter = ref('all')
 const loading = ref(false)
+const rotationIndex = ref(0)
+
+let refreshTimer = null
+let rotationTimer = null
 
 const quickFilters = [
   { key: 'all', label: 'Все' },
@@ -144,14 +165,34 @@ const quickFilters = [
   { key: 'withLinks', label: 'Со ссылками' },
 ]
 
+const parseBool = (value) => ['1', 'true', 'yes', 'on'].includes(String(value || '').toLowerCase())
+const clamp = (value, min, max, fallback) => {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return fallback
+  return Math.min(max, Math.max(min, Math.floor(numeric)))
+}
+
+const isObsMode = computed(() => parseBool(route.query.obs) || parseBool(route.query.live))
+const isCleanMode = computed(() => isObsMode.value || parseBool(route.query.clean))
+const obsRotationEnabled = computed(() => parseBool(route.query.rotate) || isObsMode.value)
+const refreshIntervalSeconds = computed(() => clamp(route.query.refresh, 5, 300, isObsMode.value ? 15 : 30))
+const rotationIntervalSeconds = computed(() => clamp(route.query.interval, 3, 120, 12))
+const queryLimit = computed(() => clamp(route.query.limit, 1, 300, 100))
+const obsOnlyMedia = computed(() => parseBool(route.query.only_media))
+const obsOnlyLinks = computed(() => parseBool(route.query.only_links))
+
 const load = async () => {
   loading.value = true
   try {
-    const { data } = await api.get('/stream/feed')
+    const { data } = await api.get(`/stream/feed?limit=${queryLimit.value}`)
     feed.value = data
+    if (rotationIndex.value >= data.length) {
+      rotationIndex.value = 0
+    }
     refreshedAt.value = new Date().toLocaleTimeString('ru-RU', {
       hour: '2-digit',
       minute: '2-digit',
+      second: isObsMode.value ? '2-digit' : undefined,
     })
   } finally {
     loading.value = false
@@ -188,13 +229,110 @@ const filteredFeed = computed(() => {
     items = items.filter((item) => item?.links?.length)
   }
 
+  if (obsOnlyMedia.value) {
+    items = items.filter((item) => item?.attachments?.length)
+  }
+
+  if (obsOnlyLinks.value) {
+    items = items.filter((item) => item?.links?.length)
+  }
+
   return items
 })
 
 const featuredItem = computed(() => filteredFeed.value[0] || null)
+const currentObsItem = computed(() => {
+  if (!filteredFeed.value.length) return null
+  return filteredFeed.value[rotationIndex.value % filteredFeed.value.length]
+})
 const withMediaCount = computed(() => feed.value.filter((item) => item.attachments?.length).length)
 const withLinksCount = computed(() => feed.value.filter((item) => item.links?.length).length)
 const formatDate = (value) => new Date(value).toLocaleString('ru-RU')
 
-onMounted(load)
+const restartRefreshTimer = () => {
+  if (refreshTimer) clearInterval(refreshTimer)
+  refreshTimer = setInterval(() => {
+    load()
+  }, refreshIntervalSeconds.value * 1000)
+}
+
+const restartRotationTimer = () => {
+  if (rotationTimer) clearInterval(rotationTimer)
+  if (!obsRotationEnabled.value) return
+
+  rotationTimer = setInterval(() => {
+    if (!filteredFeed.value.length) return
+    rotationIndex.value = (rotationIndex.value + 1) % filteredFeed.value.length
+  }, rotationIntervalSeconds.value * 1000)
+}
+
+watch(
+  () => [route.query.obs, route.query.live, route.query.clean, route.query.rotate, route.query.interval, route.query.refresh, route.query.limit, route.query.only_media, route.query.only_links],
+  async () => {
+    await load()
+    restartRefreshTimer()
+    restartRotationTimer()
+  },
+)
+
+watch(filteredFeed, (items) => {
+  if (!items.length) {
+    rotationIndex.value = 0
+    return
+  }
+  if (rotationIndex.value >= items.length) {
+    rotationIndex.value = 0
+  }
+})
+
+onMounted(async () => {
+  await load()
+  restartRefreshTimer()
+  restartRotationTimer()
+})
+
+onBeforeUnmount(() => {
+  if (refreshTimer) clearInterval(refreshTimer)
+  if (rotationTimer) clearInterval(rotationTimer)
+})
 </script>
+
+<style scoped>
+.obs-shell {
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top, rgba(255, 255, 255, 0.06), transparent 30%),
+    linear-gradient(180deg, #050816 0%, #02040b 100%);
+}
+
+.obs-grid {
+  gap: 0;
+}
+
+.obs-stage {
+  display: grid;
+  gap: 1rem;
+  min-height: calc(100vh - 3rem);
+  align-content: start;
+}
+
+.obs-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.obs-chip {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(15, 23, 42, 0.72);
+  padding: 0.45rem 0.8rem;
+  border-radius: 999px;
+  font-size: 0.82rem;
+  color: rgba(226, 232, 240, 0.88);
+}
+
+.obs-footer {
+  color: rgba(148, 163, 184, 0.9);
+  font-size: 0.85rem;
+}
+</style>

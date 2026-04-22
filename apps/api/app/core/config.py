@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     notification_queue_key: str = "mn:queue:notifications"
     notification_retry_queue_key: str = "mn:queue:notifications:retry"
+    notification_dead_letter_queue_key: str = "mn:queue:notifications:dead"
+    notification_audit_list_key: str = "mn:audit:notifications"
+    notification_audit_max_items: int = 100
 
     redis_socket_timeout_seconds: int = 2
     redis_blocking_socket_timeout_seconds: int = 15

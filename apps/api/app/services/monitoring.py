@@ -7,6 +7,7 @@ from sqlalchemy import text
 
 from app.core.config import settings
 from app.db.session import SessionLocal
+from app.services.notification_audit import read_dead_letter_items, read_notification_audit
 from app.services.runtime_redis import get_redis
 
 
@@ -55,6 +56,7 @@ def get_notification_metrics() -> dict[str, Any]:
         redis = get_redis()
         main_queue = redis.llen(settings.notification_queue_key)
         retry_queue = redis.llen(settings.notification_retry_queue_key)
+        dead_queue = redis.llen(settings.notification_dead_letter_queue_key)
 
         heartbeat_raw = redis.get(settings.notification_worker_heartbeat_key)
         now = int(time.time())
@@ -70,6 +72,7 @@ def get_notification_metrics() -> dict[str, Any]:
         return {
             "queue_main": int(main_queue),
             "queue_retry": int(retry_queue),
+            "queue_dead": int(dead_queue),
             "worker_last_heartbeat_ts": heartbeat_ts,
             "worker_age_seconds": worker_age_seconds,
             "worker_alive": worker_alive,
@@ -78,6 +81,7 @@ def get_notification_metrics() -> dict[str, Any]:
         return {
             "queue_main": None,
             "queue_retry": None,
+            "queue_dead": None,
             "worker_last_heartbeat_ts": None,
             "worker_age_seconds": None,
             "worker_alive": False,
@@ -98,4 +102,12 @@ def get_health_snapshot() -> dict[str, Any]:
         "database": db,
         "redis": redis,
         "notifications": notifications,
+    }
+
+
+def get_notification_audit_snapshot(limit: int = 20) -> dict[str, Any]:
+    return {
+        "notifications": get_notification_metrics(),
+        "recent_events": read_notification_audit(limit=limit),
+        "dead_letter_items": read_dead_letter_items(limit=limit),
     }

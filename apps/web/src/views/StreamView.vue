@@ -21,13 +21,14 @@
                 <span class="meta-chip">{{ filteredFeed.length }} карточек</span>
                 <span class="meta-chip">{{ withMediaCount }} с файлами</span>
                 <span class="meta-chip">{{ withLinksCount }} со ссылками</span>
+                <span class="meta-chip">{{ refreshLabel }}</span>
               </div>
             </div>
 
             <div class="topbar-actions">
               <router-link to="/admin" class="btn-secondary">Вернуться в модерацию</router-link>
-              <button class="btn-secondary" :disabled="loading" @click="load">
-                {{ loading ? 'Обновление...' : 'Обновить' }}
+              <button class="btn-secondary" :disabled="loading || refreshInFlight" @click="loadFeed()">
+                {{ loading || refreshInFlight ? 'Обновление...' : 'Обновить' }}
               </button>
             </div>
           </div>
@@ -121,7 +122,7 @@
         <SubmissionCard :item="currentObsItem" />
 
         <div v-if="obsRotationEnabled" class="obs-footer">
-          Автопереключение каждые {{ rotationIntervalSeconds }} сек. · Автообновление каждые {{ refreshIntervalSeconds }} сек.
+          Автопереключение каждые {{ safeRotationIntervalSeconds }} сек. · Автообновление каждые {{ safeRefreshIntervalSeconds }} сек.
         </div>
       </section>
 
@@ -153,10 +154,12 @@ const searchQuery = ref('')
 const refreshedAt = ref('—')
 const quickFilter = ref('all')
 const loading = ref(false)
+const refreshInFlight = ref(false)
 const rotationIndex = ref(0)
 
 let refreshTimer = null
 let rotationTimer = null
+let activeController = null
 
 const quickFilters = [
   { key: 'all', label: 'Все' },
@@ -175,27 +178,31 @@ const clamp = (value, min, max, fallback) => {
 const isObsMode = computed(() => parseBool(route.query.obs) || parseBool(route.query.live))
 const isCleanMode = computed(() => isObsMode.value || parseBool(route.query.clean))
 const obsRotationEnabled = computed(() => parseBool(route.query.rotate) || isObsMode.value)
-const refreshIntervalSeconds = computed(() => clamp(route.query.refresh, 5, 300, isObsMode.value ? 15 : 30))
-const rotationIntervalSeconds = computed(() => clamp(route.query.interval, 3, 120, 12))
+const safeRefreshIntervalSeconds = computed(() => clamp(route.query.refresh, 5, 300, isObsMode.value ? 15 : 30))
+const safeRotationIntervalSeconds = computed(() => clamp(route.query.interval, 3, 120, 12))
 const queryLimit = computed(() => clamp(route.query.limit, 1, 300, 100))
 const obsOnlyMedia = computed(() => parseBool(route.query.only_media))
 const obsOnlyLinks = computed(() => parseBool(route.query.only_links))
+const refreshLabel = computed(() => `Автообновление: каждые ${safeRefreshIntervalSeconds.value} сек.`)
 
-const load = async () => {
-  loading.value = true
-  try {
-    const { data } = await api.get(`/stream/feed?limit=${queryLimit.value}`)
-    feed.value = data
-    if (rotationIndex.value >= data.length) {
-      rotationIndex.value = 0
-    }
-    refreshedAt.value = new Date().toLocaleTimeString('ru-RU', {
-      hour: '2-digit',
-      minute: '2-digit',
-      second: isObsMode.value ? '2-digit' : undefined,
-    })
-  } finally {
-    loading.value = false
+const abortActiveRequest = () => {
+  if (activeController) {
+    activeController.abort()
+    activeController = null
+  }
+}
+
+const clearRefreshTimer = () => {
+  if (refreshTimer) {
+    clearTimeout(refreshTimer)
+    refreshTimer = null
+  }
+}
+
+const clearRotationTimer = () => {
+  if (rotationTimer) {
+    clearTimeout(rotationTimer)
+    rotationTimer = null
   }
 }
 
@@ -249,29 +256,89 @@ const withMediaCount = computed(() => feed.value.filter((item) => item.attachmen
 const withLinksCount = computed(() => feed.value.filter((item) => item.links?.length).length)
 const formatDate = (value) => new Date(value).toLocaleString('ru-RU')
 
-const restartRefreshTimer = () => {
-  if (refreshTimer) clearInterval(refreshTimer)
-  refreshTimer = setInterval(() => {
-    load()
-  }, refreshIntervalSeconds.value * 1000)
+const loadFeed = async () => {
+  if (refreshInFlight.value) return
+
+  refreshInFlight.value = true
+  loading.value = true
+  const controller = new AbortController()
+  activeController = controller
+
+  try {
+    const { data } = await api.get(`/stream/feed?limit=${queryLimit.value}`, {
+      signal: controller.signal,
+    })
+    feed.value = data
+    if (rotationIndex.value >= data.length) {
+      rotationIndex.value = 0
+    }
+    refreshedAt.value = new Date().toLocaleTimeString('ru-RU', {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: isObsMode.value ? '2-digit' : undefined,
+    })
+  } catch (error) {
+    if (error?.code !== 'ERR_CANCELED' && error?.name !== 'CanceledError') {
+      console.error('Failed to refresh stream feed', error)
+    }
+  } finally {
+    if (activeController === controller) {
+      activeController = null
+    }
+    loading.value = false
+    refreshInFlight.value = false
+  }
 }
 
-const restartRotationTimer = () => {
-  if (rotationTimer) clearInterval(rotationTimer)
+const scheduleNextRefresh = () => {
+  clearRefreshTimer()
+  refreshTimer = setTimeout(async () => {
+    if (document.visibilityState === 'visible' && !refreshInFlight.value) {
+      await loadFeed()
+    }
+    scheduleNextRefresh()
+  }, safeRefreshIntervalSeconds.value * 1000)
+}
+
+const scheduleNextRotation = () => {
+  clearRotationTimer()
   if (!obsRotationEnabled.value) return
 
-  rotationTimer = setInterval(() => {
-    if (!filteredFeed.value.length) return
-    rotationIndex.value = (rotationIndex.value + 1) % filteredFeed.value.length
-  }, rotationIntervalSeconds.value * 1000)
+  rotationTimer = setTimeout(() => {
+    if (filteredFeed.value.length) {
+      rotationIndex.value = (rotationIndex.value + 1) % filteredFeed.value.length
+    }
+    scheduleNextRotation()
+  }, safeRotationIntervalSeconds.value * 1000)
+}
+
+const restartLoops = async () => {
+  await loadFeed()
+  scheduleNextRefresh()
+  scheduleNextRotation()
+}
+
+const handleVisibilityChange = () => {
+  if (document.visibilityState === 'visible') {
+    scheduleNextRefresh()
+    scheduleNextRotation()
+  }
 }
 
 watch(
-  () => [route.query.obs, route.query.live, route.query.clean, route.query.rotate, route.query.interval, route.query.refresh, route.query.limit, route.query.only_media, route.query.only_links],
+  () => [
+    route.query.obs,
+    route.query.live,
+    route.query.clean,
+    route.query.rotate,
+    route.query.interval,
+    route.query.refresh,
+    route.query.limit,
+    route.query.only_media,
+    route.query.only_links,
+  ],
   async () => {
-    await load()
-    restartRefreshTimer()
-    restartRotationTimer()
+    await restartLoops()
   },
 )
 
@@ -286,14 +353,15 @@ watch(filteredFeed, (items) => {
 })
 
 onMounted(async () => {
-  await load()
-  restartRefreshTimer()
-  restartRotationTimer()
+  await restartLoops()
+  document.addEventListener('visibilitychange', handleVisibilityChange)
 })
 
 onBeforeUnmount(() => {
-  if (refreshTimer) clearInterval(refreshTimer)
-  if (rotationTimer) clearInterval(rotationTimer)
+  abortActiveRequest()
+  clearRefreshTimer()
+  clearRotationTimer()
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
 })
 </script>
 

@@ -12,7 +12,7 @@
               <div class="max-w-4xl">
                 <h1 class="surface-title">Проверка предложки без лишнего шума</h1>
                 <p class="surface-subtitle">
-                  Всё, что нужно модератору, на одном экране: очередь, поиск, фильтры, вложения, действия и понятные подсказки.
+                  Всё, что нужно модератору, на одном экране: очередь, поиск, фильтры, вложения, действия, мониторинг и история уведомлений.
                 </p>
               </div>
 
@@ -70,7 +70,7 @@
             </div>
           </div>
 
-          <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
             <div class="panel p-5">
               <div class="kpi-label">Готовность API</div>
               <div class="mt-2 flex items-center gap-2">
@@ -94,6 +94,12 @@
               <div class="kpi-label">Retry очередь</div>
               <div class="kpi-value text-[1.8rem]">{{ monitoring.notifications.queue_retry ?? '—' }}</div>
               <div class="kpi-text">Задачи, которые требуют повторной отправки.</div>
+            </div>
+
+            <div class="panel p-5">
+              <div class="kpi-label">Dead-letter</div>
+              <div class="kpi-value text-[1.8rem]">{{ monitoring.notifications.queue_dead ?? '—' }}</div>
+              <div class="kpi-text">Уведомления, которые не доставились окончательно.</div>
             </div>
 
             <div class="panel p-5">
@@ -174,7 +180,7 @@
           <section class="panel p-5">
             <div class="sidebar-title">Автообновление</div>
             <p class="sidebar-text">
-              Когда вкладка активна, список, счётчики и мониторинг обновляются автоматически.
+              Когда вкладка активна, список, счётчики, мониторинг и аудит уведомлений обновляются автоматически.
             </p>
 
             <div class="mt-4 info-list">
@@ -189,6 +195,28 @@
               <div class="info-row">
                 <div class="kpi-label">Последнее обновление</div>
                 <div class="info-value">{{ monitoringUpdatedAt }}</div>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel p-5">
+            <div class="sidebar-title">Сводка по уведомлениям</div>
+            <p class="sidebar-text">
+              Быстрая картина по доставке в Telegram без перехода в консоль.
+            </p>
+
+            <div class="mt-4 info-list">
+              <div class="info-row">
+                <div class="kpi-label">Последних событий</div>
+                <div class="info-value">{{ notificationAudit.recent_events.length }}</div>
+              </div>
+              <div class="info-row">
+                <div class="kpi-label">Dead-letter карточек</div>
+                <div class="info-value">{{ notificationAudit.dead_letter_items.length }}</div>
+              </div>
+              <div class="info-row">
+                <div class="kpi-label">Последний статус</div>
+                <div class="info-value">{{ lastAuditStatusLabel }}</div>
               </div>
             </div>
           </section>
@@ -256,6 +284,88 @@
             <p class="mt-2 text-sm leading-6 text-slate-400">
               Попробуй очистить поиск, убрать фильтр или открыть другой раздел.
             </p>
+          </div>
+
+          <div class="grid gap-4 xl:grid-cols-2">
+            <section class="panel p-5 md:p-6">
+              <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <div class="sidebar-title">История доставки уведомлений</div>
+                  <p class="sidebar-text">
+                    Последние события отправки: доставлено, retry, permanent failed и служебные статусы.
+                  </p>
+                </div>
+                <span class="meta-chip">{{ notificationAudit.recent_events.length }} записей</span>
+              </div>
+
+              <div v-if="notificationAudit.recent_events.length" class="mt-4 space-y-3">
+                <article
+                  v-for="(event, index) in notificationAudit.recent_events"
+                  :key="`${event.timestamp}-${event.chat_id}-${index}`"
+                  class="hint-box"
+                >
+                  <div class="flex flex-wrap items-center gap-2">
+                    <span class="badge" :class="auditStatusClass(event.status)">
+                      {{ auditStatusLabel(event.status) }}
+                    </span>
+                    <span class="badge">{{ auditKindLabel(event.kind) }}</span>
+                    <span class="badge">chat {{ event.chat_id }}</span>
+                    <span v-if="event.submission_id" class="badge">#{{ event.submission_id }}</span>
+                    <span class="badge">{{ formatAuditTime(event.timestamp) }}</span>
+                    <span v-if="event.retries" class="badge">попытка {{ event.retries }}</span>
+                  </div>
+
+                  <div v-if="event.detail" class="mt-3 text-sm leading-6 text-slate-200 break-words">
+                    {{ event.detail }}
+                  </div>
+                </article>
+              </div>
+
+              <div v-else class="mt-4 text-sm text-slate-400">
+                Событий по доставке пока нет.
+              </div>
+            </section>
+
+            <section class="panel p-5 md:p-6">
+              <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <div class="sidebar-title">Dead-letter</div>
+                  <p class="sidebar-text">
+                    Уведомления, которые не удалось доставить после всех повторных попыток.
+                  </p>
+                </div>
+                <span class="meta-chip">{{ notificationAudit.dead_letter_items.length }} элементов</span>
+              </div>
+
+              <div v-if="notificationAudit.dead_letter_items.length" class="mt-4 space-y-3">
+                <article
+                  v-for="(item, index) in notificationAudit.dead_letter_items"
+                  :key="`${item.dead_lettered_at || item.submission_id || index}-${index}`"
+                  class="hint-box"
+                >
+                  <div class="flex flex-wrap items-center gap-2">
+                    <span class="badge badge-rejected">Не доставлено</span>
+                    <span class="badge">{{ auditKindLabel(item.kind) }}</span>
+                    <span class="badge">chat {{ item.chat_id }}</span>
+                    <span v-if="item.submission_id" class="badge">#{{ item.submission_id }}</span>
+                    <span v-if="item.retries" class="badge">{{ item.retries }} попытки</span>
+                    <span v-if="item.dead_lettered_at" class="badge">{{ formatAuditTime(item.dead_lettered_at) }}</span>
+                  </div>
+
+                  <div v-if="item.comment" class="mt-3 text-sm leading-6 text-slate-300 break-words">
+                    Комментарий: {{ item.comment }}
+                  </div>
+
+                  <div v-if="item.detail" class="mt-2 text-sm leading-6 text-rose-200 break-words">
+                    Ошибка: {{ item.detail }}
+                  </div>
+                </article>
+              </div>
+
+              <div v-else class="mt-4 text-sm text-slate-400">
+                Dead-letter сейчас пустой.
+              </div>
+            </section>
           </div>
         </section>
       </div>
@@ -344,9 +454,22 @@ const monitoring = ref({
   notifications: {
     queue_main: 0,
     queue_retry: 0,
+    queue_dead: 0,
     worker_alive: false,
     worker_age_seconds: null,
   },
+})
+
+const notificationAudit = ref({
+  notifications: {
+    queue_main: 0,
+    queue_retry: 0,
+    queue_dead: 0,
+    worker_alive: false,
+    worker_age_seconds: null,
+  },
+  recent_events: [],
+  dead_letter_items: [],
 })
 
 const monitoringUpdatedAt = ref('—')
@@ -378,6 +501,69 @@ const safeAutoRefreshSeconds = computed(() => {
     return 15
   }
   return Math.floor(value)
+})
+
+const tabs = computed(() => [
+  { key: 'pending', label: 'Ждут проверки', count: counts.value.pending },
+  { key: 'approved', label: 'Одобренные', count: counts.value.approved },
+  { key: 'rejected', label: 'Отклонённые', count: counts.value.rejected },
+])
+
+const labels = {
+  pending: {
+    title: 'Ждут проверки',
+    subtitle: 'Новые материалы, по которым нужно принять решение.',
+  },
+  approved: {
+    title: 'Одобренные материалы',
+    subtitle: 'Эти карточки уже готовы для показа в эфирной ленте.',
+  },
+  rejected: {
+    title: 'Отклонённые материалы',
+    subtitle: 'Архив материалов, которые не прошли модерацию.',
+  },
+}
+
+const quickFilters = [
+  { key: 'all', label: 'Все' },
+  { key: 'withText', label: 'С текстом' },
+  { key: 'withMedia', label: 'С файлами' },
+  { key: 'withLinks', label: 'Со ссылками' },
+]
+
+const quickFilterLabelMap = {
+  all: 'Все материалы',
+  withText: 'Только с текстом',
+  withMedia: 'Только с файлами',
+  withLinks: 'Только со ссылками',
+}
+
+const currentTitle = computed(() => labels[selectedTab.value]?.title || '')
+const currentSubtitle = computed(() => labels[selectedTab.value]?.subtitle || '')
+const quickFilterLabel = computed(() => quickFilterLabelMap[quickFilter.value] || 'Все материалы')
+const totalCount = computed(() => counts.value.pending + counts.value.approved + counts.value.rejected)
+const totalPages = computed(() => Math.max(Math.ceil(currentTotal.value / pageSize), 1))
+const itemRangeStart = computed(() => (currentTotal.value ? (page.value - 1) * pageSize + 1 : 0))
+const itemRangeEnd = computed(() => Math.min(page.value * pageSize, currentTotal.value))
+const latestTimestamp = computed(() => {
+  const firstItem = items.value[0]
+  if (!firstItem) return 'Новых поступлений на этой странице нет'
+  return `Последнее поступление: ${new Date(firstItem.created_at).toLocaleString('ru-RU')}`
+})
+const autoRefreshLabel = computed(() => {
+  return autoRefreshEnabled.value
+    ? `Автообновление: каждые ${safeAutoRefreshSeconds.value} сек.`
+    : 'Автообновление отключено'
+})
+const workerAgeLabel = computed(() => {
+  const age = monitoring.value?.notifications?.worker_age_seconds
+  if (age === null || age === undefined) return 'нет данных'
+  return `${age} сек.`
+})
+const lastAuditStatusLabel = computed(() => {
+  const first = notificationAudit.value?.recent_events?.[0]
+  if (!first?.status) return 'нет данных'
+  return auditStatusLabel(first.status)
 })
 
 const abortActiveRequest = () => {
@@ -413,77 +599,13 @@ const setNotice = (text, type = 'success') => {
   }, 2600)
 }
 
-const quickFilters = [
-  { key: 'all', label: 'Все' },
-  { key: 'withText', label: 'С текстом' },
-  { key: 'withMedia', label: 'С файлами' },
-  { key: 'withLinks', label: 'Со ссылками' },
-]
-
-const labels = {
-  pending: {
-    title: 'Ждут проверки',
-    subtitle: 'Новые материалы, по которым нужно принять решение.',
-  },
-  approved: {
-    title: 'Одобренные материалы',
-    subtitle: 'Эти карточки уже готовы для показа в эфирной ленте.',
-  },
-  rejected: {
-    title: 'Отклонённые материалы',
-    subtitle: 'Архив материалов, которые не прошли модерацию.',
-  },
-}
-
-const quickFilterLabelMap = {
-  all: 'Все материалы',
-  withText: 'Только с текстом',
-  withMedia: 'Только с файлами',
-  withLinks: 'Только со ссылками',
-}
-
-const tabs = computed(() => [
-  { key: 'pending', label: 'Ждут проверки', count: counts.value.pending },
-  { key: 'approved', label: 'Одобренные', count: counts.value.approved },
-  { key: 'rejected', label: 'Отклонённые', count: counts.value.rejected },
-])
-
-const currentTitle = computed(() => labels[selectedTab.value]?.title || '')
-const currentSubtitle = computed(() => labels[selectedTab.value]?.subtitle || '')
-const quickFilterLabel = computed(() => quickFilterLabelMap[quickFilter.value] || 'Все материалы')
-const totalCount = computed(() => counts.value.pending + counts.value.approved + counts.value.rejected)
-const totalPages = computed(() => Math.max(Math.ceil(currentTotal.value / pageSize), 1))
-const itemRangeStart = computed(() => (currentTotal.value ? (page.value - 1) * pageSize + 1 : 0))
-const itemRangeEnd = computed(() => Math.min(page.value * pageSize, currentTotal.value))
-
-const latestTimestamp = computed(() => {
-  const firstItem = items.value[0]
-  if (!firstItem) return 'Новых поступлений на этой странице нет'
-  return `Последнее поступление: ${new Date(firstItem.created_at).toLocaleString('ru-RU')}`
-})
-
-const autoRefreshLabel = computed(() => {
-  return autoRefreshEnabled.value
-    ? `Автообновление: каждые ${safeAutoRefreshSeconds.value} сек.`
-    : 'Автообновление отключено'
-})
-
-const workerAgeLabel = computed(() => {
-  const age = monitoring.value?.notifications?.worker_age_seconds
-  if (age === null || age === undefined) return 'нет данных'
-  return `${age} сек.`
-})
-
 const buildFilterParams = () => {
   const params = new URLSearchParams()
-
   const q = searchQuery.value.trim()
   if (q) params.set('q', q)
-
   if (quickFilter.value === 'withText') params.set('has_text', 'true')
   if (quickFilter.value === 'withMedia') params.set('has_attachments', 'true')
   if (quickFilter.value === 'withLinks') params.set('has_links', 'true')
-
   return params
 }
 
@@ -507,7 +629,11 @@ const loadStats = async (signal) => {
 const loadMonitoring = async (signal) => {
   const { data } = await api.get('/admin/monitoring/summary', { signal })
   monitoring.value = data
-  monitoringUpdatedAt.value = new Date().toLocaleTimeString('ru-RU')
+}
+
+const loadNotificationAudit = async (signal) => {
+  const { data } = await api.get('/admin/monitoring/notifications?limit=20', { signal })
+  notificationAudit.value = data
 }
 
 const loadCurrentPage = async (signal) => {
@@ -526,6 +652,10 @@ const loadCurrentPage = async (signal) => {
   }
 }
 
+const markUpdatedAt = () => {
+  monitoringUpdatedAt.value = new Date().toLocaleTimeString('ru-RU')
+}
+
 const performReload = async (mode = 'all') => {
   if (refreshInFlight.value) return
 
@@ -538,14 +668,17 @@ const performReload = async (mode = 'all') => {
       await Promise.all([
         loadCurrentPage(controller.signal),
         loadMonitoring(controller.signal),
+        loadNotificationAudit(controller.signal),
       ])
     } else {
       await Promise.all([
         loadStats(controller.signal),
         loadCurrentPage(controller.signal),
         loadMonitoring(controller.signal),
+        loadNotificationAudit(controller.signal),
       ])
     }
+    markUpdatedAt()
   } catch (error) {
     if (isCanceledError(error)) return
     if (isAuthError(error)) {
@@ -579,7 +712,6 @@ const runSearchRefresh = () => {
 
 const scheduleNextAutoRefresh = () => {
   clearAutoRefresh()
-
   if (!autoRefreshEnabled.value) return
 
   autoRefreshTimer = setTimeout(async () => {
@@ -588,10 +720,6 @@ const scheduleNextAutoRefresh = () => {
     }
     scheduleNextAutoRefresh()
   }, safeAutoRefreshSeconds.value * 1000)
-}
-
-const startAutoRefresh = () => {
-  scheduleNextAutoRefresh()
 }
 
 const toggleAutoRefresh = () => {
@@ -796,6 +924,39 @@ const nextPage = async () => {
   if (page.value >= totalPages.value) return
   page.value += 1
   await reloadPageOnly()
+}
+
+const formatAuditTime = (timestamp) => {
+  if (!timestamp) return '—'
+  return new Date(Number(timestamp) * 1000).toLocaleString('ru-RU')
+}
+
+const auditStatusLabel = (status) => {
+  const map = {
+    delivered: 'Доставлено',
+    retry_scheduled: 'Повтор',
+    permanent_failed: 'Ошибка',
+    skipped_unknown_kind: 'Пропущено',
+  }
+  return map[status] || status || '—'
+}
+
+const auditStatusClass = (status) => {
+  const map = {
+    delivered: 'badge-approved',
+    retry_scheduled: 'badge-pending',
+    permanent_failed: 'badge-rejected',
+    skipped_unknown_kind: '',
+  }
+  return map[status] || ''
+}
+
+const auditKindLabel = (kind) => {
+  const map = {
+    submission_approved: 'Одобрение',
+    submission_rejected: 'Отклонение',
+  }
+  return map[kind] || kind || 'unknown'
 }
 
 const handleVisibilityChange = () => {

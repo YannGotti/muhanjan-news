@@ -8,6 +8,7 @@ from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from app.core.config import settings
+from app.services.notification_audit import move_to_dead_letter, record_notification_event
 from app.services.notification_sender import (
     build_approved_text,
     build_rejected_text,
@@ -71,10 +72,20 @@ def run_worker() -> None:
             _, raw_payload = item
             job = json.loads(raw_payload)
             chat_id = int(job["chat_id"])
+            kind = str(job.get("kind") or "")
+            submission_id = int(job["submission_id"]) if job.get("submission_id") is not None else None
             text = _build_text(job)
 
             if not text:
                 logger.warning("Skipped unknown notification job: %s", job)
+                record_notification_event(
+                    status="skipped_unknown_kind",
+                    kind=kind or "unknown",
+                    chat_id=chat_id,
+                    submission_id=submission_id,
+                    retries=int(job.get("retries") or 0),
+                    detail="Unknown notification kind",
+                )
                 continue
 
             ok, detail = send_telegram_text(chat_id=chat_id, text=text)
@@ -84,16 +95,42 @@ def run_worker() -> None:
                     "Notification delivery failed (attempt %s) for chat_id=%s submission_id=%s: %s",
                     job["retries"],
                     chat_id,
-                    job.get("submission_id"),
+                    submission_id,
                     detail,
                 )
+
                 if job["retries"] <= 3:
+                    record_notification_event(
+                        status="retry_scheduled",
+                        kind=kind,
+                        chat_id=chat_id,
+                        submission_id=submission_id,
+                        retries=int(job["retries"]),
+                        detail=detail,
+                    )
                     redis.lpush(settings.notification_retry_queue_key, json.dumps(job, ensure_ascii=False))
                     time.sleep(1)
                 else:
+                    record_notification_event(
+                        status="permanent_failed",
+                        kind=kind,
+                        chat_id=chat_id,
+                        submission_id=submission_id,
+                        retries=int(job["retries"]),
+                        detail=detail,
+                    )
+                    move_to_dead_letter(job, detail=detail)
                     logger.error("Notification permanently failed: %s | detail=%s", job, detail)
                 continue
 
+            record_notification_event(
+                status="delivered",
+                kind=kind,
+                chat_id=chat_id,
+                submission_id=submission_id,
+                retries=int(job.get("retries") or 0),
+                detail=detail,
+            )
             logger.info("Notification delivered: %s", job)
 
         except KeyboardInterrupt:

@@ -12,9 +12,16 @@
         </div>
 
         <div>
-          <h3 class="text-xl font-semibold text-white">
-            {{ item.user?.twitch_nickname || 'Twitch не указан' }}
-          </h3>
+          <button
+            type="button"
+            class="text-left"
+            title="Открыть подробности по автору"
+            @click="$emit('open-user', item.user)"
+          >
+            <h3 class="text-xl font-semibold text-white transition hover:text-rose-200">
+              {{ item.user?.twitch_nickname || 'Twitch не указан' }}
+            </h3>
+          </button>
 
           <div class="mt-2 flex flex-wrap gap-2 text-sm text-zinc-400">
             <span class="badge">
@@ -167,6 +174,13 @@
 
       <div class="flex flex-wrap gap-3">
         <button
+          class="btn-secondary"
+          title="Открыть подробности по автору"
+          @click="$emit('open-user', item.user)"
+        >
+          Профиль автора
+        </button>
+        <button
           v-if="item.status === 'pending'"
           class="btn-primary"
           title="Одобрить материал и отправить его в эфирную ленту"
@@ -211,7 +225,7 @@ const props = defineProps({
   showActions: { type: Boolean, default: false },
 })
 
-defineEmits(['approve', 'reject', 'ban', 'unban'])
+defineEmits(['approve', 'reject', 'ban', 'unban', 'open-user'])
 
 const copiedText = ref(false)
 const copiedLink = ref('')

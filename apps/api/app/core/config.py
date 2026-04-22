@@ -18,7 +18,13 @@ class Settings(BaseSettings):
     base_public_web_url: str = "http://127.0.0.1:5174"
     cors_allow_origins: str = "http://localhost:5174"
 
-    model_config = SettingsConfigDict(env_file='.env', extra='ignore')
+    telegram_bot_token: str | None = None
+    telegram_parse_mode: str = "HTML"
+    telegram_request_timeout_seconds: int = 5
+
+    max_attachment_file_size_bytes: int = 20 * 1024 * 1024
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     @property
     def upload_dir_path(self) -> Path:

@@ -1,34 +1,18 @@
 import json
 from datetime import datetime, timezone
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
-from app.core.config import settings
+from app.models.submission import Attachment, Submission
 from app.models.user import User
-from app.models.submission import Submission, Attachment
 from app.schemas.bot import BotUserUpsert, SubmissionCreate, TwitchNicknameUpdate
+from app.services.file_security import validate_attachment_payload
 from app.services.links import extract_links
 from app.services.settings import is_moderation_enabled
 
 router = APIRouter(tags=["bot"])
-
-
-def _validate_attachment_path(storage_path: str) -> str:
-    base_dir = settings.upload_dir_path.resolve()
-    target_path = Path(storage_path).resolve()
-
-    try:
-        target_path.relative_to(base_dir)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="Некорректный путь вложения") from exc
-
-    if not target_path.exists():
-        raise HTTPException(status_code=400, detail="Файл вложения не найден")
-
-    return str(target_path)
 
 
 @router.post("/bot/users/upsert")
@@ -163,6 +147,13 @@ def create_submission(payload: SubmissionCreate, db: Session = Depends(get_db)):
     db.flush()
 
     for item in payload.attachments:
+        safe_path = validate_attachment_payload(
+            file_type=item.file_type,
+            original_name=item.original_name,
+            mime_type=item.mime_type,
+            file_size=item.file_size,
+            storage_path=item.storage_path,
+        )
         db.add(
             Attachment(
                 submission_id=submission.id,
@@ -172,7 +163,7 @@ def create_submission(payload: SubmissionCreate, db: Session = Depends(get_db)):
                 original_name=item.original_name,
                 mime_type=item.mime_type,
                 file_size=item.file_size,
-                storage_path=_validate_attachment_path(item.storage_path),
+                storage_path=safe_path,
                 public_url=item.public_url,
             )
         )

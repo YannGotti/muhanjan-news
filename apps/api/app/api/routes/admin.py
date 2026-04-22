@@ -1,13 +1,14 @@
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, selectinload
 
 from app.api.deps import get_current_admin, get_db
+from app.models.submission import ModerationAction, Submission
 from app.models.user import User
-from app.models.submission import Submission, ModerationAction
-from app.schemas.admin import ReviewRequest, BanRequest
+from app.schemas.admin import BanRequest, ReviewRequest, UserDetailStats, UserDetailsResponse
+from app.services.notifications import notify_submission_approved, notify_submission_rejected
 from app.utils.serializers import submission_to_schema
 
 router = APIRouter(tags=["admin"])
@@ -76,6 +77,34 @@ def _apply_submission_filters(
     return query
 
 
+@router.get("/admin/submissions/stats")
+def get_submission_stats(
+    q: str | None = None,
+    has_text: bool | None = None,
+    has_attachments: bool | None = None,
+    has_links: bool | None = None,
+    _: str = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    base_query = db.query(Submission)
+
+    filtered_query = _apply_submission_filters(
+        base_query,
+        status=None,
+        q=q,
+        has_text=has_text,
+        has_attachments=has_attachments,
+        has_links=has_links,
+    )
+
+    return {
+        "pending": filtered_query.filter(Submission.status == "pending").count(),
+        "approved": filtered_query.filter(Submission.status == "approved").count(),
+        "rejected": filtered_query.filter(Submission.status == "rejected").count(),
+        "total": filtered_query.count(),
+    }
+
+
 @router.get("/admin/submissions")
 def list_submissions(
     status: str | None = None,
@@ -115,6 +144,55 @@ def list_submissions(
     }
 
 
+@router.get("/admin/users/{user_id}/details", response_model=UserDetailsResponse)
+def get_user_details(
+    user_id: int,
+    _: str = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+
+    recent_submissions = (
+        db.query(Submission)
+        .options(selectinload(Submission.user), selectinload(Submission.attachments))
+        .filter(Submission.user_id == user.id)
+        .order_by(Submission.created_at.desc())
+        .limit(8)
+        .all()
+    )
+
+    actions = (
+        db.query(ModerationAction)
+        .filter(ModerationAction.user_id == user.id)
+        .order_by(ModerationAction.created_at.desc())
+        .limit(20)
+        .all()
+    )
+
+    grouped_stats = dict(
+        db.query(Submission.status, func.count(Submission.id))
+        .filter(Submission.user_id == user.id)
+        .group_by(Submission.status)
+        .all()
+    )
+
+    total_submissions = sum(int(value) for value in grouped_stats.values())
+
+    return UserDetailsResponse(
+        user=user,
+        stats=UserDetailStats(
+            total_submissions=total_submissions,
+            pending=int(grouped_stats.get("pending", 0)),
+            approved=int(grouped_stats.get("approved", 0)),
+            rejected=int(grouped_stats.get("rejected", 0)),
+        ),
+        recent_submissions=[submission_to_schema(item) for item in recent_submissions],
+        actions=actions,
+    )
+
+
 @router.post("/admin/submissions/{submission_id}/approve")
 def approve_submission(
     submission_id: int,
@@ -146,6 +224,14 @@ def approve_submission(
         user_id=item.user_id,
         comment=payload.comment,
     )
+
+    if item.user and item.user.telegram_id:
+        notify_submission_approved(
+            chat_id=item.user.telegram_id,
+            submission_id=item.id,
+            comment=payload.comment,
+        )
+
     return {"ok": True}
 
 
@@ -156,7 +242,12 @@ def reject_submission(
     actor: str = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    item = db.query(Submission).filter(Submission.id == submission_id).first()
+    item = (
+        db.query(Submission)
+        .options(selectinload(Submission.user), selectinload(Submission.attachments))
+        .filter(Submission.id == submission_id)
+        .first()
+    )
     if not item:
         raise HTTPException(status_code=404, detail="Предложка не найдена")
 
@@ -175,6 +266,14 @@ def reject_submission(
         user_id=item.user_id,
         comment=payload.comment,
     )
+
+    if item.user and item.user.telegram_id:
+        notify_submission_rejected(
+            chat_id=item.user.telegram_id,
+            submission_id=item.id,
+            comment=payload.comment,
+        )
+
     return {"ok": True}
 
 

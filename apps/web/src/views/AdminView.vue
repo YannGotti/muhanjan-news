@@ -130,8 +130,8 @@
             <ol class="guide-list mt-4">
               <li>Открой материал из очереди.</li>
               <li>Проверь текст, ссылки и файлы.</li>
-              <li>Если материал подходит — одобри.</li>
-              <li>Если не подходит — отклони с причиной.</li>
+              <li>Открой профиль автора, если нужно больше контекста.</li>
+              <li>Прими решение и при необходимости заблокируй пользователя.</li>
             </ol>
           </section>
 
@@ -209,6 +209,7 @@
               @reject="openRejectModal"
               @ban="openBanModal"
               @unban="openUnbanModal"
+              @open-user="openUserDetails"
             />
           </div>
 
@@ -262,6 +263,13 @@
       @close="closeUnbanModal"
       @submit="submitUnban"
     />
+
+    <UserDetailsModal
+      :open="userDetailsModal.open"
+      :details="userDetailsModal.details"
+      :loading="userDetailsModal.loading"
+      @close="closeUserDetails"
+    />
   </div>
 </template>
 
@@ -269,8 +277,9 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import api from '../api/client'
-import SubmissionCard from '../components/SubmissionCard.vue'
 import AdminActionModal from '../components/AdminActionModal.vue'
+import SubmissionCard from '../components/SubmissionCard.vue'
+import UserDetailsModal from '../components/UserDetailsModal.vue'
 
 const router = useRouter()
 
@@ -298,9 +307,26 @@ const notice = ref({
 const rejectModal = ref({ open: false, item: null })
 const banModal = ref({ open: false, user: null })
 const unbanModal = ref({ open: false, user: null })
+const userDetailsModal = ref({ open: false, details: null, loading: false })
 
 let noticeTimeout = null
 let searchDebounce = null
+let activeController = null
+
+const isCanceledError = (error) => error?.code === 'ERR_CANCELED' || error?.name === 'CanceledError'
+
+const abortActiveRequest = () => {
+  if (activeController) {
+    activeController.abort()
+    activeController = null
+  }
+}
+
+const createRequestSignal = () => {
+  abortActiveRequest()
+  activeController = new AbortController()
+  return activeController.signal
+}
 
 const setNotice = (text, type = 'success') => {
   clearTimeout(noticeTimeout)
@@ -369,42 +395,39 @@ const latestTimestamp = computed(() => {
   return `Последнее поступление: ${new Date(firstItem.created_at).toLocaleString('ru-RU')}`
 })
 
-const buildParams = (statusKey, extra = {}) => {
+const buildFilterParams = () => {
   const params = new URLSearchParams()
-  params.set('status', statusKey)
-  params.set('limit', String(extra.limit ?? pageSize))
-  params.set('offset', String(extra.offset ?? (page.value - 1) * pageSize))
-
   const q = searchQuery.value.trim()
   if (q) params.set('q', q)
-
   if (quickFilter.value === 'withText') params.set('has_text', 'true')
   if (quickFilter.value === 'withMedia') params.set('has_attachments', 'true')
   if (quickFilter.value === 'withLinks') params.set('has_links', 'true')
-
   return params
 }
 
-const loadCounts = async () => {
-  const [pendingRes, approvedRes, rejectedRes] = await Promise.all([
-    api.get(`/admin/submissions?${buildParams('pending', { limit: 1, offset: 0 }).toString()}`),
-    api.get(`/admin/submissions?${buildParams('approved', { limit: 1, offset: 0 }).toString()}`),
-    api.get(`/admin/submissions?${buildParams('rejected', { limit: 1, offset: 0 }).toString()}`),
-  ])
+const buildListParams = (statusKey) => {
+  const params = buildFilterParams()
+  params.set('status', statusKey)
+  params.set('limit', String(pageSize))
+  params.set('offset', String((page.value - 1) * pageSize))
+  return params
+}
 
+const loadStats = async (signal) => {
+  const { data } = await api.get(`/admin/submissions/stats?${buildFilterParams().toString()}`, { signal })
   counts.value = {
-    pending: pendingRes.data.total || 0,
-    approved: approvedRes.data.total || 0,
-    rejected: rejectedRes.data.total || 0,
+    pending: data.pending || 0,
+    approved: data.approved || 0,
+    rejected: data.rejected || 0,
   }
 }
 
-const loadCurrentPage = async () => {
+const loadCurrentPage = async (signal) => {
   loading.value = true
   try {
     const [listRes, moderationRes] = await Promise.all([
-      api.get(`/admin/submissions?${buildParams(selectedTab.value).toString()}`),
-      api.get('/admin/settings/moderation'),
+      api.get(`/admin/submissions?${buildListParams(selectedTab.value).toString()}`, { signal }),
+      api.get('/admin/settings/moderation', { signal }),
     ])
 
     items.value = listRes.data.items || []
@@ -416,9 +439,21 @@ const loadCurrentPage = async () => {
 }
 
 const reloadAll = async () => {
+  const signal = createRequestSignal()
   try {
-    await Promise.all([loadCounts(), loadCurrentPage()])
-  } catch {
+    await Promise.all([loadStats(signal), loadCurrentPage(signal)])
+  } catch (error) {
+    if (isCanceledError(error)) return
+    logout()
+  }
+}
+
+const reloadPageOnly = async () => {
+  const signal = createRequestSignal()
+  try {
+    await loadCurrentPage(signal)
+  } catch (error) {
+    if (isCanceledError(error)) return
     logout()
   }
 }
@@ -434,11 +469,45 @@ const runSearchRefresh = () => {
 const selectTab = async (tabKey) => {
   selectedTab.value = tabKey
   page.value = 1
-  await loadCurrentPage()
+  await reloadPageOnly()
 }
 
 const setQuickFilter = async (filterKey) => {
   quickFilter.value = filterKey
+}
+
+const openUserDetails = async (user) => {
+  if (!user?.id) return
+
+  userDetailsModal.value = {
+    open: true,
+    details: null,
+    loading: true,
+  }
+
+  try {
+    const { data } = await api.get(`/admin/users/${user.id}/details`)
+    userDetailsModal.value = {
+      open: true,
+      details: data,
+      loading: false,
+    }
+  } catch (e) {
+    userDetailsModal.value = {
+      open: true,
+      details: null,
+      loading: false,
+    }
+    setNotice(e?.response?.data?.detail || 'Не удалось загрузить профиль автора.', 'error')
+  }
+}
+
+const closeUserDetails = () => {
+  userDetailsModal.value = {
+    open: false,
+    details: null,
+    loading: false,
+  }
 }
 
 const approve = async (item) => {
@@ -446,6 +515,9 @@ const approve = async (item) => {
   try {
     await api.post(`/admin/submissions/${item.id}/approve`, { comment: null })
     await reloadAll()
+    if (userDetailsModal.value.open && userDetailsModal.value.details?.user?.id === item.user?.id) {
+      await openUserDetails(item.user)
+    }
     setNotice(`Материал #${item.id} одобрен.`, 'success')
   } catch (e) {
     setNotice(e?.response?.data?.detail || 'Не удалось одобрить материал.', 'error')
@@ -463,14 +535,18 @@ const closeRejectModal = () => {
 }
 
 const submitReject = async (comment) => {
-  if (!rejectModal.value.item) return
+  const currentItem = rejectModal.value.item
+  if (!currentItem) return
 
   actionLoading.value = true
   try {
-    await api.post(`/admin/submissions/${rejectModal.value.item.id}/reject`, { comment })
+    await api.post(`/admin/submissions/${currentItem.id}/reject`, { comment })
     closeRejectModal()
     await reloadAll()
-    setNotice(`Материал #${rejectModal.value.item?.id || ''} отклонён.`, 'warning')
+    if (userDetailsModal.value.open && userDetailsModal.value.details?.user?.id === currentItem.user?.id) {
+      await openUserDetails(currentItem.user)
+    }
+    setNotice(`Материал #${currentItem.id} отклонён.`, 'warning')
   } catch (e) {
     setNotice(e?.response?.data?.detail || 'Не удалось отклонить материал.', 'error')
   } finally {
@@ -487,14 +563,18 @@ const closeBanModal = () => {
 }
 
 const submitBan = async (reason) => {
-  if (!banModal.value.user) return
+  const currentUser = banModal.value.user
+  if (!currentUser) return
 
   actionLoading.value = true
   try {
-    await api.post(`/admin/users/${banModal.value.user.id}/ban`, { reason })
+    await api.post(`/admin/users/${currentUser.id}/ban`, { reason })
     closeBanModal()
     await reloadAll()
-    setNotice(`Пользователь ${banModal.value.user?.twitch_nickname || banModal.value.user?.telegram_id} заблокирован.`, 'warning')
+    if (userDetailsModal.value.open && userDetailsModal.value.details?.user?.id === currentUser.id) {
+      await openUserDetails(currentUser)
+    }
+    setNotice(`Пользователь ${currentUser?.twitch_nickname || currentUser?.telegram_id} заблокирован.`, 'warning')
   } catch (e) {
     setNotice(e?.response?.data?.detail || 'Не удалось заблокировать пользователя.', 'error')
   } finally {
@@ -511,14 +591,18 @@ const closeUnbanModal = () => {
 }
 
 const submitUnban = async () => {
-  if (!unbanModal.value.user) return
+  const currentUser = unbanModal.value.user
+  if (!currentUser) return
 
   actionLoading.value = true
   try {
-    await api.post(`/admin/users/${unbanModal.value.user.id}/unban`)
+    await api.post(`/admin/users/${currentUser.id}/unban`)
     closeUnbanModal()
     await reloadAll()
-    setNotice(`Пользователь ${unbanModal.value.user?.twitch_nickname || unbanModal.value.user?.telegram_id} разблокирован.`, 'success')
+    if (userDetailsModal.value.open && userDetailsModal.value.details?.user?.id === currentUser.id) {
+      await openUserDetails(currentUser)
+    }
+    setNotice(`Пользователь ${currentUser?.twitch_nickname || currentUser?.telegram_id} разблокирован.`, 'success')
   } catch (e) {
     setNotice(e?.response?.data?.detail || 'Не удалось разблокировать пользователя.', 'error')
   } finally {
@@ -548,16 +632,17 @@ const toggleModeration = async () => {
 const prevPage = async () => {
   if (page.value <= 1) return
   page.value -= 1
-  await loadCurrentPage()
+  await reloadPageOnly()
 }
 
 const nextPage = async () => {
   if (page.value >= totalPages.value) return
   page.value += 1
-  await loadCurrentPage()
+  await reloadPageOnly()
 }
 
 const logout = () => {
+  abortActiveRequest()
   localStorage.removeItem('mn_token')
   router.push('/login')
 }
@@ -566,10 +651,6 @@ watch(searchQuery, runSearchRefresh)
 watch(quickFilter, runSearchRefresh)
 
 onMounted(async () => {
-  try {
-    await reloadAll()
-  } catch {
-    logout()
-  }
+  await reloadAll()
 })
 </script>

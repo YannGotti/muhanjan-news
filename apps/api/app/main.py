@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from app.api.routes import auth, admin, stream, bot_ingest, settings
+from app.api.routes import admin, attachments, auth, bot_ingest, settings, stream
 from app.core.config import settings as app_settings
 
 app = FastAPI(title=app_settings.app_name)
@@ -21,6 +21,7 @@ app.include_router(admin.router, prefix=app_settings.api_v1_prefix)
 app.include_router(stream.router, prefix=app_settings.api_v1_prefix)
 app.include_router(bot_ingest.router, prefix=app_settings.api_v1_prefix)
 app.include_router(settings.router, prefix=app_settings.api_v1_prefix)
+app.include_router(attachments.router, prefix=app_settings.api_v1_prefix)
 
 app.mount("/uploads", StaticFiles(directory=app_settings.upload_dir), name="uploads")
 

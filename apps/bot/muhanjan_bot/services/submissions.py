@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import re
+
 from aiogram import Bot
 from aiogram.types import Message
 
 from muhanjan_bot.services.api import BotApiError, api_client, extract_error_detail
 from muhanjan_bot.services.files import save_telegram_file
-
 
 STATUS_LABELS = {
     "pending": "ждёт проверки",
@@ -13,14 +14,23 @@ STATUS_LABELS = {
     "rejected": "отклонён",
 }
 
+URL_RE = re.compile(r"https?://[^\s]+", re.IGNORECASE)
+
+
+def _extract_links(text: str | None) -> list[str]:
+    if not text:
+        return []
+    return list(dict.fromkeys(URL_RE.findall(text)))
+
 
 def _base_payload(message: Message) -> dict:
+    text = message.text or message.caption or ""
     return {
         "telegram_id": message.from_user.id,
-        "message_text": message.text or message.caption or "",
+        "message_text": text,
         "source_message_id": message.message_id,
         "attachments": [],
-        "links": [],
+        "links": _extract_links(text),
     }
 
 
@@ -28,7 +38,7 @@ async def _append_attachment(attachments: list[dict], payload: dict) -> None:
     attachments.append(payload)
 
 
-async def build_submission_payload(bot: Bot, message: Message) -> dict:
+async def build_submission_part(bot: Bot, message: Message) -> dict:
     payload = _base_payload(message)
     attachments = payload["attachments"]
 
@@ -167,10 +177,14 @@ async def build_submission_payload(bot: Bot, message: Message) -> dict:
     return payload
 
 
+async def build_submission_payload(bot: Bot, message: Message) -> dict:
+    return await build_submission_part(bot, message)
+
+
 def is_message_usable_for_submission(message: Message) -> bool:
     return bool(
         (message.text and message.text.strip())
-        or message.caption
+        or (message.caption and message.caption.strip())
         or message.photo
         or message.document
         or message.video
@@ -193,10 +207,7 @@ async def send_submission(payload: dict) -> dict:
             "detail": extract_error_detail(response),
         }
 
-    return {
-        "ok": True,
-        **response.json(),
-    }
+    return {"ok": True, **response.json()}
 
 
 async def fetch_recent_submissions(telegram_id: int, limit: int = 5) -> list[dict]:

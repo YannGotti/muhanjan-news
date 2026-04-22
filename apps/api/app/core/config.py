@@ -11,8 +11,11 @@ class Settings(BaseSettings):
     jwt_secret_key: str
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 1440
+
     admin_username: str = "admin"
     admin_password: str = "admin"
+    admin_password_hash: str | None = None
+
     upload_dir: str = "../../storage/uploads"
     base_public_api_url: str = "http://127.0.0.1:8002"
     base_public_web_url: str = "http://127.0.0.1:5174"

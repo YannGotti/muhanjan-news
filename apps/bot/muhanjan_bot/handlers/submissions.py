@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 
 from aiogram import F, Router
-from aiogram.filters import StateFilter
+from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
@@ -12,9 +12,17 @@ from muhanjan_bot.config import settings
 from muhanjan_bot.keyboards.inline import submission_preview_keyboard
 from muhanjan_bot.keyboards.reply import main_menu_keyboard
 from muhanjan_bot.services.api import BotApiError
+from muhanjan_bot.services.drafts import (
+    acquire_album_notice,
+    append_album_part,
+    clear_draft_payload,
+    draft_has_content,
+    get_draft_payload,
+)
 from muhanjan_bot.services.files import BotFileValidationError
 from muhanjan_bot.services.limits import acquire_submission_cooldown, register_submission_message
 from muhanjan_bot.services.submissions import (
+    build_submission_part,
     build_submission_payload,
     is_message_usable_for_submission,
     send_submission,
@@ -57,11 +65,13 @@ def _format_attachments(payload: dict) -> str:
 def _preview_summary(payload: dict) -> str:
     message_text = (payload.get("message_text") or "").strip()
     links = _extract_links(message_text)
+    payload_links = list(payload.get("links") or [])
+    links_count = max(len(links), len(payload_links))
     text_block = html_safe(_truncate(message_text)) if message_text else texts.PREVIEW_NO_TEXT
 
     return (
         f"<b>{texts.PREVIEW_TEXT_LABEL}:</b> {text_block}\n"
-        f"<b>{texts.PREVIEW_LINKS_LABEL}:</b> {len(links)}\n"
+        f"<b>{texts.PREVIEW_LINKS_LABEL}:</b> {links_count}\n"
         f"<b>{texts.PREVIEW_ATTACHMENTS_LABEL}:</b> {html_safe(_format_attachments(payload))}"
     )
 
@@ -94,8 +104,99 @@ async def _ensure_submission_permissions(message: Message) -> dict | None:
     return state
 
 
+async def _open_payload_preview(
+    message: Message,
+    state: FSMContext,
+    payload: dict,
+    *,
+    source: str,
+    intro_text: str | None = None,
+) -> None:
+    await state.set_state(SubmissionState.waiting_confirmation)
+    await state.update_data(pending_submission=payload, pending_submission_source=source)
+
+    body = texts.SUBMISSION_PREVIEW_HEADER.format(summary=_preview_summary(payload))
+    if intro_text:
+        body = f"{intro_text}\n\n{body}"
+
+    await message.answer(body, reply_markup=submission_preview_keyboard())
+
+
+@router.message(Command("draft"))
+async def draft_command(message: Message, state: FSMContext) -> None:
+    user_state = await _ensure_submission_permissions(message)
+    if user_state is None:
+        return
+
+    draft = await get_draft_payload(message.from_user.id)
+    if not draft_has_content(draft):
+        await message.answer(texts.DRAFT_NOT_FOUND, reply_markup=main_menu_keyboard())
+        return
+
+    await _open_payload_preview(
+        message,
+        state,
+        draft,
+        source="draft",
+        intro_text=texts.DRAFT_SEND_PROMPT,
+    )
+
+
+@router.message(Command("clear_draft"))
+async def clear_draft_command(message: Message) -> None:
+    await clear_draft_payload(message.from_user.id)
+    await message.answer(texts.DRAFT_CLEARED, reply_markup=main_menu_keyboard())
+
+
+@router.message(lambda message: (message.text or "").strip() == texts.MENU_SEND_DRAFT)
+async def send_draft_button(message: Message, state: FSMContext) -> None:
+    await draft_command(message, state)
+
+
+@router.message(lambda message: (message.text or "").strip() == texts.MENU_CLEAR_DRAFT)
+async def clear_draft_button(message: Message) -> None:
+    await clear_draft_command(message)
+
+
+@router.message(F.media_group_id)
+async def handle_media_group_submission(message: Message, state: FSMContext) -> None:
+    user_state = await _ensure_submission_permissions(message)
+    if user_state is None:
+        return
+
+    if not is_message_usable_for_submission(message):
+        return
+
+    try:
+        payload_part = await build_submission_part(message.bot, message)
+    except BotFileValidationError:
+        max_size_mb = max(settings.max_upload_file_size_bytes // (1024 * 1024), 1)
+        await message.answer(
+            texts.FILE_TOO_LARGE_MESSAGE.format(max_size_mb=max_size_mb),
+            reply_markup=main_menu_keyboard(),
+        )
+        return
+    except BotApiError:
+        await message.answer(texts.API_TEMPORARY_UNAVAILABLE, reply_markup=main_menu_keyboard())
+        return
+
+    await append_album_part(
+        user_id=message.from_user.id,
+        media_group_id=str(message.media_group_id),
+        part=payload_part,
+    )
+
+    should_notify = await acquire_album_notice(message.from_user.id, str(message.media_group_id))
+    if should_notify:
+        await state.clear()
+        await message.answer(texts.DRAFT_CREATED_ALBUM, reply_markup=main_menu_keyboard())
+
+
 @router.message(F.content_type.in_({"text", "photo", "document", "video", "audio", "voice", "animation"}))
 async def handle_submission(message: Message, state: FSMContext) -> None:
+    if message.media_group_id:
+        return
+
     user_state = await _ensure_submission_permissions(message)
     if user_state is None:
         return
@@ -117,27 +218,26 @@ async def handle_submission(message: Message, state: FSMContext) -> None:
         await message.answer(texts.API_TEMPORARY_UNAVAILABLE, reply_markup=main_menu_keyboard())
         return
 
-    await state.set_state(SubmissionState.waiting_confirmation)
-    await state.update_data(pending_submission=payload)
-
-    await message.answer(
-        texts.SUBMISSION_PREVIEW_HEADER.format(summary=_preview_summary(payload)),
-        reply_markup=submission_preview_keyboard(),
-    )
+    await _open_payload_preview(message, state, payload, source="message")
 
 
 @router.callback_query(StateFilter(SubmissionState.waiting_confirmation), F.data == "submission:cancel")
 async def cancel_submission_preview(callback: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    source = data.get("pending_submission_source")
     await state.clear()
     await callback.answer()
+
     if callback.message:
-        await callback.message.edit_text(texts.SUBMISSION_PREVIEW_CANCELED)
+        text = texts.DRAFT_PREVIEW_CANCELED if source == "draft" else texts.SUBMISSION_PREVIEW_CANCELED
+        await callback.message.edit_text(text)
 
 
 @router.callback_query(StateFilter(SubmissionState.waiting_confirmation), F.data == "submission:confirm")
 async def confirm_submission_preview(callback: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
     payload = data.get("pending_submission")
+    source = data.get("pending_submission_source")
 
     if not payload:
         await state.clear()
@@ -212,6 +312,9 @@ async def confirm_submission_preview(callback: CallbackQuery, state: FSMContext)
         await callback.answer()
         await callback.message.answer(texts.SUBMISSION_FAILED, reply_markup=main_menu_keyboard())
         return
+
+    if source == "draft":
+        await clear_draft_payload(callback.from_user.id)
 
     await state.clear()
     await callback.answer()

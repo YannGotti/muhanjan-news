@@ -34,7 +34,6 @@ def _format_recent_items(items: list[dict]) -> str:
     lines: list[str] = []
     for item in items:
         created_at = item.get("created_at")
-        created_text = ""
         try:
             created_text = datetime.fromisoformat(str(created_at).replace("Z", "+00:00")).strftime("%d.%m.%Y %H:%M")
         except Exception:
@@ -42,9 +41,7 @@ def _format_recent_items(items: list[dict]) -> str:
 
         preview = (item.get("message_preview") or "Без текста").strip()
         comment = (item.get("review_comment") or "").strip()
-        comment_block = ""
-        if comment:
-            comment_block = texts.RECENT_COMMENT_BLOCK.format(comment=html_safe(comment))
+        comment_block = texts.RECENT_COMMENT_BLOCK.format(comment=html_safe(comment)) if comment else ""
 
         lines.append(
             texts.RECENT_SUBMISSION_ITEM.format(
